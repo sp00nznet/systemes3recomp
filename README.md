@@ -18,7 +18,9 @@
 community hub for sp00nznet's recomp projects.
 
 **Current version: v0.1.0.** The pipeline runs end to end against *Mario Kart
-Arcade GP DX*. See [Status](#status) for the numbers.
+Arcade GP DX* at **99.97% instruction coverage**, and the recompiled host maps
+the image, answers 455 of its 495 imports out of the host's own DLLs and
+reaches the game's entry point. See [Status](#status) for the numbers.
 
 ---
 
@@ -57,7 +59,7 @@ from that game's executable.
    +----------------------+   The binary is stripped. Recursive descent from
    |  2. Find the         |   the entry point, plus prologue and data-pointer
    |     functions        |   scans. pcrecomp's tools/disasm/.     WORKS
-   +----------------------+   Slow: this is the hours-long step.
+   +----------------------+   Slow, and the least exact step. 28,597 found.
               |
               v
    +----------------------+   x86-32 -> C, one C statement per instruction,
@@ -73,7 +75,7 @@ from that game's executable.
               v
    +----------------------+   Map the image where it was linked, point the
    |  5. Link the runtime |   IAT at us, hand the rest to Windows.
-   +----------------------+   src/runtime/                       PARTIAL
+   +----------------------+   src/runtime/         455 of 495 answered
               |
               v
         NATIVE EXECUTABLE
@@ -108,20 +110,53 @@ match sees the first and misses the rest.
 
 ### What we gave back
 
-Two things this project needed did not exist upstream, so they were built
-upstream rather than here — which is the shape a good change to any of these
-projects takes.
+This project is the first thing to run pcrecomp's whole PC pipeline over a
+whole stripped game, and that found a lot. All of it was fixed **upstream in
+[pcrecomp](https://github.com/sp00nznet/pcrecomp)** rather than here, which is
+the shape a good change to any of these projects takes.
+
+**A function's extent was not clamped to the next function.** `func.end` comes
+out of recursive descent as `max(block.end)`, and descent follows unconditional
+jumps — so one `jmp` to a shared epilogue puts the end far past the body and
+everything in between is counted as part of this function. The lifter then
+reads `size` bytes *linearly*, so it lifts all of them, inside this function,
+again. Measured here: **28,597 functions claiming 89.5 MB of bodies for a
+4.3 MB code range**, 271 of them over 64 KB and one at 1.3 MB, which lifted to
+1.9 GB of C. That is not a coverage problem, it is the same code twenty times
+over, and no compiler will take it. `clamp_extents()` brings the claim to
+6.7 MB and the output to 2.1 million lines.
+
+**And a body cut mid-function returned instead of transferring.** Falling off
+the end of a lifted extent is a real control transfer on x86; the generated C
+reached its closing brace and returned, skipping the `ret` that never ran and
+leaving esp four bytes low. Nothing faults and every value the caller reads
+afterwards is one slot out. Now it emits `dispatch(c, <end>); return;`, which
+is what the fallthrough *is* — dead code in a correctly-sized function, and the
+reason clamping is safe.
+
+**`fucom` was 81% of the remaining gap.** Of 50,555 instructions the lifter
+could not express, 40,796 were `fucompp` and 7,450 more were `fucomp` — one
+mnemonic was most of it. They were missing because only `fcom`/`fcomp`/`fcompp`
+were listed, and `fucom` is the *same comparison*: the two differ only in which
+NaNs raise an invalid-operation exception, which this model does not raise at
+all. Which made the omission worse than it looks, because the unordered forms
+are the common ones — MSVC emits `fucompp; fnstsw ax; test ah` for an ordinary
+float comparison in C. Coverage went from 99.73% to **99.97%**.
+
+**Three instructions killed the lift outright**, each ending the whole run with
+a traceback: `repz ret` (AMD's branch-prediction idiom for a plain `ret`, which
+MSVC puts at every branch target that returns), `jmp fword ptr` far pointers,
+and `fld tbyte` / `fldenv`, which were silently read as 64-bit doubles.
 
 **Reading a stack purge off the callee's own `ret N`.** Every shim has to pop
 exactly what the real function popped; get one wrong and the guest stack
-silently desynchronises and the symptom appears nowhere near the cause. Every
-existing strategy read the count off a *name*, and names run out exactly where
-an arcade port gets interesting: OKAO Vision exports by ordinal only, and its
-DLLs exist nowhere but in a game tree. But the count is also in the callee —
-so `stdcall_argc.py` now disassembles the export and reads it. Checked against
-the Windows SDK import libraries over every export where both have an answer:
-**1,307 agree, 2 disagree.** On *Mario Kart*'s import table it took 449 of 495
-resolved to **489 of 495**.
+silently desynchronises. Every existing strategy read the count off a *name*,
+and names run out exactly where an arcade port gets interesting: OKAO Vision
+exports by ordinal only, and its DLLs exist nowhere but in a game tree. But the
+count is also in the callee — so `stdcall_argc.py` now disassembles the export
+and reads it. Checked against the Windows SDK import libraries over every
+export where both have an answer: **1,307 agree, 2 disagree.** On this import
+table it took 449 of 495 resolved to **489 of 495**.
 
 **Moving the x87 stack across the lifted/real boundary.** `hybrid_regs` is the
 integer registers, which is the whole ABI for almost every call — except that a
@@ -141,11 +176,56 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 | | |
 |---|---|
 | PE parsing | **Works.** Verified against four *Mario Kart Arcade GP DX* builds spanning 2013–2022. Sections, entry, 495 imports across 27 DLLs, 108,414 relocations. |
-| Function recovery | **Works.** Recursive descent from the entry point, prologue scan, and data-pointer probe. See the table below. |
-| Lifting | **Works.** |
+| Function recovery | **Works.** **28,597 functions** in 6 discovery rounds — 121 thunks, 11,972 leaves, 9,255,442 instructions — covering **99.5%** of the 4,308,348-byte code range. Nothing to read them from; see below. |
+| Lifting | **Works.** All 28,596 sized functions lift to **2,126,309 lines of C** (199 MB) in 72 translation units. Not one fails outright. |
+| Instruction coverage | **99.9737%.** 560 of 2,126,309 emitted lines are `/* TODO */ abort()`, down from 50,555 before the x87 compares landed upstream. |
+| Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Partial.** Image mapping, the IAT sentinel boundary, dispatch and the native forwarder build and run 32-bit, and the self-checks pass. Untested against a full game boot. |
-| The board | **Not started, on purpose.** JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
+| Runtime | **Boots.** Maps the image at `0x00400000`, patches all 495 IAT slots, resolves **455 imports** against the host's own DLLs and reaches the game's entry point. Not yet run against the full lifted image. |
+| The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
+
+### What is still unlifted, in full
+
+560 lines out of 2.1 million, and no single family dominates any more:
+
+| | count |
+|---|---:|
+| `in` / `out` / `insb` — port I/O, which userspace has no business doing | 82 |
+| `clc` `stc` `cli` `hlt` `into` `iretd` `pushal` `arpl` `salc` … | ~180 |
+| MMX — `movd` `psrlq` `psllq` `por` `emms` (a second register file, not SSE) | ~60 |
+| `jmp`/`call fword ptr` — m16:32 far pointers, which a flat model cannot take | 13 |
+| packed SSE — `shufps` `mulps` `addps` | few |
+
+**A good part of that is not really code.** `hlt`, `cli`, `into`, `iretd`,
+`arpl` and `salc` do not appear in a compiled Win32 user-mode program. They are
+what data looks like when the recovery pass takes a pointer-shaped word for a
+function start — which is the honest reading of this table, and the reason
+[CONTRIBUTING](CONTRIBUTING.md) puts recovery precision above everything else.
+
+Packed SSE arithmetic is the one left out deliberately rather than missed: it
+needs per-lane code, and a plausible-looking wrong lane is worse than an honest
+`abort()`.
+
+### The binary is stripped
+
+Worth saying on its own, because it is the one place this platform is *harder*
+than Lindbergh. A Lindbergh ELF ships its full symbol table — 31,752 named,
+sized functions, no discovery problem at all. An ES3 executable ships nothing:
+the PDB path survives in the debug directory (`D:\work\MK3\repos\branches\
+Master_1st\Bin\Final\MK_AGP3_FINAL.pdb`) and the PDB does not.
+
+So the function list is recovered, not read, and recovery is the slow and
+fallible step — half an hour on this binary, and the result has to be treated
+as a strong signal rather than ground truth. The number that says so:
+**7,050 of the 28,596 lifted bodies end in a fallthrough transfer** rather than
+a return, which is what a function cut short by a false-positive start next
+door looks like. 6,832 of those transfers land on another lifted function and
+carry on correctly; the other 218 abort naming the address they wanted, which
+is how you find them.
+
+That is a quarter of the image reached by a path that should not have been
+needed. It works, and it is not right, and it is the most valuable thing in
+this repo to improve.
 
 ### The binary is stripped
 
@@ -178,15 +258,17 @@ cd systemes3recomp
 # what the executable asks the board for
 py -3.11 -m tools pe MK_AGP3_FINAL.exe
 
-# recover its functions - slow, run once, keep the catalog
+# recover its functions. Half an hour on a 4 MB .text - run it once and keep
+# the catalog; every later step reads it.
 py -3.11 -m tools scan MK_AGP3_FINAL.exe catalog.json
 
-# lift it
+# lift it - minutes, not hours
 py -3.11 -m tools recomp MK_AGP3_FINAL.exe catalog.json gen\
 
 # the checks
 py -3.11 tools\recomp\test_driver.py
 py -3.11 pcrecomp\tools\pe\stdcall_argc.py --selftest
+py -3.11 pcrecomp\tools\disasm\disasm32.py --selftest
 cmake -S . -B build -A Win32; cmake --build build --config Release
 ctest --test-dir build -C Release
 ```

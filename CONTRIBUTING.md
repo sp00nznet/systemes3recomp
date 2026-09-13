@@ -5,22 +5,33 @@ Anything that gets a real title closer to running is welcome.
 
 ## Where the gaps are
 
-Real, scoped, and measured against *Mario Kart Arcade GP DX* v1.00.32 — 495
-imports, 27 DLLs. None of them need permission to start.
+Real, scoped, and measured against *Mario Kart Arcade GP DX* v1.00.32 — 28,597
+recovered functions, 2.1 million lines of lifted C at 99.97% instruction
+coverage, 495 imports from 27 DLLs. None of them need permission to start.
 
 ### Done, for reference
 
-The import table went from 449 of 495 stack purges derivable to **489 of 495**,
-by teaching [pcrecomp](https://github.com/sp00nznet/pcrecomp)'s
-`stdcall_argc.py` to read the count out of the callee's own `ret N` rather than
-off a name. That is the shape a good contribution here takes: measure first,
-fix it in the one place that serves every target, leave a test behind.
+Seven fixes, all of them upstream in
+[pcrecomp](https://github.com/sp00nznet/pcrecomp), all of them found by running
+the pipeline over a whole game rather than by reading the code. The two worth
+knowing about:
+
+* function extents were not clamped to the next function start, so the catalog
+  claimed **89.5 MB of bodies out of a 4.3 MB code range** and the lift came
+  out at 1.9 GB of C — the same code twenty times over
+* `fucompp` and `fucomp` were **81% of every instruction the lifter could not
+  express**, because only the ordered `fcom` forms were listed and `fucom` is
+  the same comparison
+
+That is the shape a good contribution here takes: measure first, fix it in the
+one place that serves every target, leave a test behind.
 
 ### Still open here
 
 | Area | What is missing | Difficulty |
 |---|---|---|
-| **A full boot** | The runtime builds and its self-checks pass, but no title has been lifted and run end to end yet. The first run will name whatever is wrong, and finding out what that is is the single most valuable thing anyone can do to this repo. | Medium |
+| **Past the entry point** | The image maps, the IAT is patched, 455 imports resolve and control reaches `mainCRTStartup`. Nobody has run the *full* lifted image yet — 72 translation units and 199 MB of C, which is a long build and has never been done. What it does next is the single most valuable unknown in this repo. | Medium |
+| **Recovery precision** | 7,050 of 28,596 lifted bodies end in a fallthrough transfer rather than a return, which is what a function cut short by a false-positive start next door looks like. 6,832 of those land on another lifted function and carry on; 218 abort. A quarter of the image is reached by a path that should not have been needed. | Large |
 | **Callbacks** | A forwarded library function that calls back into game code — a window procedure, a `qsort` comparator, a D3D callback — hands the host a guest VA, and the original bytes are still mapped, so it silently runs the *unlifted* original. pcrecomp's `hybrid_thunk()` is the fix and is already in the submodule; it needs wiring in. The first one to bite will be the window procedure. | Medium |
 | **JVS input** | Coins, wheel, pedals, buttons. Nothing is playable until this works, and the report layout has not been measured. See [docs/board-io.md](docs/board-io.md). | Medium |
 | **The card reader** | `bngrw.dll`, 11 imports. An honest "no card present" first — and finding out what the game does with it. | Medium |
@@ -32,8 +43,8 @@ fix it in the one place that serves every target, leave a test behind.
 
 | Job | Why it lands there | Difficulty |
 |---|---|---|
-| **Function recovery precision** | The binary is stripped, so the function list is recovered by recursive descent and the data-pointer probe. Every false start lifts to garbage and every miss is an unresolved dispatch at run time. `score_recovery.py` exists to measure this against a reference; ES3 has no linker map to score against, which makes a scoring method for stripped binaries its own open problem. | Large |
-| **Packed SSE and MMX** | Deliberately left unlifted rather than guessed at: they need per-lane code, and a plausible-looking wrong lane is worse than an honest `abort()`. | Medium |
+| **Function recovery precision** | The binary is stripped, so the function list is recovered by recursive descent and the data-pointer probe. Every false start lifts to garbage and truncates its neighbour; every miss is an unresolved dispatch at run time. `score_recovery.py` exists to measure this against a reference, and ES3 has no linker map to score against — which makes a scoring method for stripped binaries its own open problem. The 180 `hlt`/`cli`/`into`/`iretd` lines in the lifted output are the visible tip: those instructions do not appear in compiled user-mode code, so each one is data that a scan called a function. | Large |
+| **Packed SSE and MMX** | Deliberately left unlifted rather than guessed at: they need per-lane code, and a plausible-looking wrong lane is worse than an honest `abort()`. About 60 lines of the remaining 560. | Medium |
 | **The six unresolvable purges** | `d3dx9_43`'s math exports are `jmp dword ptr [...]` CPU-dispatch thunks whose slot is filled at DLL init. Nothing static can follow one. They do not currently need solving — those imports are forwarded and the real callee unwinds — but a project that wants to reimplement D3DX rather than forward it would. | Medium |
 
 ## The rules of the house
@@ -58,6 +69,7 @@ game past the call and breaks it somewhere else an hour later. This is why
 ```powershell
 py -3.11 tools\recomp\test_driver.py
 py -3.11 pcrecomp\tools\pe\stdcall_argc.py --selftest
+py -3.11 pcrecomp\tools\disasm\disasm32.py --selftest
 cmake -S . -B build -A Win32
 cmake --build build --config Release
 ctest --test-dir build -C Release
