@@ -31,6 +31,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "es3_rt.h"
 #include "hybrid.h"
 
@@ -52,6 +57,26 @@
 uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
 {
     CPU c;
+    /* ponytail: single-threaded. hybrid keeps its emulated-frame arena and its
+     * register marshalling slots in file-scope statics, so two threads calling
+     * back into lifted code at once would interleave and corrupt each other -
+     * silently, and a long way from the cause. A game that only ever comes
+     * back on one thread is fine, and this one has not done otherwise yet.
+     * Say so the moment it does; the fix is thread-local storage in
+     * pcrecomp/runtime/hybrid, not a workaround here. */
+#ifdef _WIN32
+    static DWORD owner;
+    DWORD self = GetCurrentThreadId();
+    if (!owner) owner = self;
+    else if (owner != self) {
+        fprintf(stderr,
+            "[hybrid] a second thread (%lu, first was %lu) is calling back into\n"
+            "         lifted code. The arena is not thread-safe - see the note\n"
+            "         in hle_callback.c. Results past here are not trustworthy.\n",
+            self, owner);
+        owner = self;
+    }
+#endif
     uint32_t esp0 = r->esp;
     uint32_t cleaned;
 
@@ -150,6 +175,41 @@ static void wrap_callback_arg(CPU *c, HleId id, unsigned argno)
     hle_call_native(c, id);
 }
 
+/* Same idea, for a callback that arrives inside a struct rather than as an
+ * argument. `RegisterClassW` is handed a WNDCLASSW whose `lpfnWndProc` is at
+ * +4; `RegisterClassExW` a WNDCLASSEXW with a `cbSize` in front of it, so +8.
+ * The struct is the game's own memory and is rewritten in place - the game
+ * does not read it back, and copying one to change a word would need a guest
+ * allocation this runtime has no business making. */
+static void wrap_callback_field(CPU *c, HleId id, unsigned field_off)
+{
+    uint32_t sp = A32(0);
+    uint32_t base = guest_image_base();
+    if (sp) {
+        uint32_t proc = rd32(sp + field_off);
+        if (proc >= base && proc < base + guest_image_size())
+            wr32(sp + field_off, es3_callback(proc));
+    }
+    hle_call_native(c, id);
+}
+
+static void hle_register_class(CPU *c, HleId id) { wrap_callback_field(c, id, 4); }
+static void hle_register_class_ex(CPU *c, HleId id) { wrap_callback_field(c, id, 8); }
+
+/* SetWindowLongW(hwnd, index, value) only carries a callback when the index is
+ * GWL_WNDPROC. Every other index is an integer the game keeps for itself, and
+ * thunking one would corrupt it. */
+static void hle_set_window_long(CPU *c, HleId id)
+{
+    if (AI32(1) == -4) wrap_callback_arg(c, id, 2);
+    else hle_call_native(c, id);
+}
+
+/* A thread entry point is a callback like any other - and the first sign that
+ * this runtime is about to be asked for something it cannot do. See the note
+ * on threads below. */
+static void hle_create_thread(CPU *c, HleId id) { wrap_callback_arg(c, id, 2); }
+
 static void hle_onexit(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 static void hle_seh_filter(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 static void hle_signal(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
@@ -183,6 +243,14 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("signal", hle_signal);
     ptrs += (unsigned)hle_bind("qsort", hle_qsort);
     ptrs += (unsigned)hle_bind("SetUnhandledExceptionFilter", hle_seh_filter);
+    ptrs += (unsigned)hle_bind("RegisterClassW", hle_register_class);
+    ptrs += (unsigned)hle_bind("RegisterClassA", hle_register_class);
+    ptrs += (unsigned)hle_bind("RegisterClassExW", hle_register_class_ex);
+    ptrs += (unsigned)hle_bind("RegisterClassExA", hle_register_class_ex);
+    ptrs += (unsigned)hle_bind("SetWindowLongW", hle_set_window_long);
+    ptrs += (unsigned)hle_bind("SetWindowLongA", hle_set_window_long);
+    ptrs += (unsigned)hle_bind("CreateThread", hle_create_thread);
+    ptrs += (unsigned)hle_bind("_beginthreadex", hle_create_thread);
 
     exits += (unsigned)hle_bind("abort", hle_give_up);
     exits += (unsigned)hle_bind("exit", hle_give_up);
