@@ -93,28 +93,66 @@ def scan(exe_path, out_json=None):
     funcs = {f.address: f.size for f in found.values() if f.size > 0}
 
     if out_json:
+        # The dict shape, with entry_kind, so a re-read can tell a function
+        # start from an alias - load_catalog needs that to clamp extents
+        # without truncating a function that has an alias inside it.
         with open(out_json, "w") as f:
             json.dump({"exe": os.path.basename(exe_path),
                        "image_base": info.image_base,
+                       "code_start": info.code_start,
+                       "code_end": info.code_end,
                        "entry": info.image_base + info.entry_point_rva,
-                       "functions": [[a, s] for a, s in sorted(funcs.items())],
+                       "functions": [{"address": a, "size": found[a].size,
+                                      "entry_kind": found[a].entry_kind}
+                                     for a in sorted(funcs)],
                        "imports": [[va, dll, name]
                                    for va, (dll, name) in sorted(iat.items())]},
                       f)
     return info, funcs, iat
 
 
-def load_catalog(path):
+def load_catalog(path, code_end=None):
     """A catalog as `scan` writes it, or as pcrecomp's disasm32 CLI writes it -
-    they are different shapes and both are worth accepting, because a long scan
-    is usually run once by hand with whichever tool was to hand."""
+    they are different shapes and both are worth accepting, because a scan
+    takes half an hour and gets run once by hand with whichever tool was there.
+
+    Extents are clamped on the way in. A catalog produced before pcrecomp
+    learned to clamp them claims function bodies that run over the top of the
+    next function, and the lifter reads them linearly - on this game that was
+    89 MB of claimed bodies for 4.3 MB of code, lifted twenty times over. The
+    clamp is idempotent, so doing it here costs nothing on a fresh catalog and
+    saves re-running the scan on an old one."""
     with open(path) as f:
         doc = json.load(f)
-    if "functions" in doc and doc["functions"] and isinstance(doc["functions"][0], dict):
-        funcs = {f["address"]: f["size"] for f in doc["functions"] if f["size"] > 0}
-        return funcs, {}
-    funcs = {int(a): int(s) for a, s in doc["functions"]}
+
+    # Imports may be absent - pcrecomp's own disasm32 CLI does not record them
+    # - and recompile() rebuilds them from the PE when they are.
     iat = {int(va): (dll, name) for va, dll, name in doc.get("imports", [])}
+    code_end = code_end or doc.get("code_end")
+
+    aliases = set()
+    if doc.get("functions") and isinstance(doc["functions"][0], dict):
+        funcs = {f["address"]: f["size"] for f in doc["functions"] if f["size"] > 0}
+        aliases = {f["address"] for f in doc["functions"]
+                   if f.get("entry_kind", "start") != "start"}
+    else:
+        # The older flat [[addr, size], ...] shape, which carries no
+        # entry_kind - so every entry is treated as a function start.
+        funcs = {int(a): int(s) for a, s in doc["functions"]}
+
+    if code_end is None:
+        code_end = max((a + s for a, s in funcs.items()), default=0)
+    before = sum(funcs.values())
+    # clamp_extents keys off entry_kind, which a plain {addr: size} map cannot
+    # carry - so the aliases are held out and put back unclamped, because an
+    # alias overlaps its host function on purpose.
+    held = {a: funcs.pop(a) for a in aliases if a in funcs}
+    pcrecomp.disasm().clamp_extents(funcs, code_end)
+    funcs.update(held)
+    after = sum(funcs.values())
+    if after < before:
+        print("[*] clamped %d bytes of overlapping function bodies to %d"
+              % (before, after), file=sys.stderr)
     return funcs, iat
 
 
@@ -124,7 +162,7 @@ def recompile(exe_path, catalog_path, outdir, addrs=None, split=400):
     Returns (functions lifted, import names referenced)."""
     pe, lift = pcrecomp.pe(), pcrecomp.lifter()
     info = pe.analyze_pe(exe_path)
-    funcs, iat = load_catalog(catalog_path)
+    funcs, iat = load_catalog(catalog_path, info.code_end)
     if not iat:                       # a catalog from pcrecomp's CLI carries none
         iat = pe.build_iat_map(info)
 

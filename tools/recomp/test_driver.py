@@ -150,7 +150,7 @@ def test_load_catalog_both_shapes():
 
         theirs = os.path.join(d, "theirs.json")
         with open(theirs, "w") as f:
-            json.dump({"functions": [
+            json.dump({"code_end": 0x402000, "functions": [
                 {"address": 0x401000, "size": 32, "name": ""},
                 {"address": 0x401100, "size": 0, "name": ""},   # size 0: unusable
             ]}, f)
@@ -159,16 +159,38 @@ def test_load_catalog_both_shapes():
         check(iat == {}, "pcrecomp catalog invented imports")
 
 
+def test_load_catalog_clamps():
+    """An old catalog whose extents run over the next function must be clamped
+    on the way in, or the lifter reads 89 MB of bodies out of a 4 MB image."""
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "over.json")
+        with open(p, "w") as f:
+            json.dump({"code_end": 0x410000, "functions": [
+                # runs straight over the two after it
+                {"address": 0x401000, "size": 0x8000, "entry_kind": "start"},
+                {"address": 0x401200, "size": 0x100,  "entry_kind": "start"},
+                # an alias inside 0x401200 - overlaps on purpose, must survive
+                {"address": 0x401250, "size": 0x30,   "entry_kind": "alias"},
+            ]}, f)
+        funcs, _ = driver.load_catalog(p)
+    check(funcs.get(0x401000) == 0x200,
+          "over-extended function not clamped: %r" % (funcs,))
+    check(funcs.get(0x401200) == 0x100, "an honest extent was changed")
+    check(funcs.get(0x401250) == 0x30, "an alias was clamped away")
+
+
 def main():
     for fn in (test_sentinel_matches_c, test_ident, test_emit_headers,
-               test_purge_unknown_is_minus_one, test_load_catalog_both_shapes):
+               test_purge_unknown_is_minus_one, test_load_catalog_both_shapes,
+               test_load_catalog_clamps):
         fn()
     for f in fails:
         print("FAIL " + f, file=sys.stderr)
     if fails:
         print("%d check(s) failed" % len(fails), file=sys.stderr)
         return 1
-    print("ok: sentinel constant, identifiers, generated headers, catalog shapes")
+    print("ok: sentinel constant, identifiers, generated headers, "
+          "catalog shapes, extent clamping")
     return 0
 
 
