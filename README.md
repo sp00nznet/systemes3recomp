@@ -18,12 +18,13 @@
 community hub for sp00nznet's recomp projects.
 
 **Current version: v0.1.0.** The pipeline runs end to end against *Mario Kart
-Arcade GP DX* at **99.97% instruction coverage**. The whole game builds to a
-32.8 MB native executable and **boots into the C runtime** — through the entry
-stub, `__security_init_cookie` and `__tmainCRTStartup`, with 455 of its 495
-imports answered by the host's own DLLs — and stops at one known architectural
-gap. See [Status](#status) for the numbers and
-[Where it stops](#where-it-stops-exactly) for the gap.
+Arcade GP DX* at **99.99% instruction coverage**. The whole game builds to a
+32.8 MB native executable and **boots**: through the CRT and every C++ static
+initialiser, into `CoInitialize` and `D3DX10CreateThreadPump`, spawning
+fourteen engine worker threads and running its task loop — 13,373 guest calls,
+with 455 of its 495 imports answered by the host's own DLLs. See
+[Status](#status) for the numbers and
+[Where it stops](#where-it-stops-exactly) for the one thing left.
 
 ---
 
@@ -179,12 +180,12 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 | | |
 |---|---|
 | PE parsing | **Works.** Verified against four *Mario Kart Arcade GP DX* builds spanning 2013–2022. Sections, entry, 495 imports across 27 DLLs, 108,414 relocations. |
-| Function recovery | **Works.** **28,597 functions** in 6 discovery rounds — 121 thunks, 11,972 leaves, 9,255,442 instructions — covering **99.5%** of the 4,308,348-byte code range. Nothing to read them from; see below. |
-| Lifting | **Works.** All 28,596 sized functions lift to **2,126,309 lines of C** (199 MB) in 72 translation units. Not one fails outright. |
-| Instruction coverage | **99.9737%.** 560 of 2,126,309 emitted lines are `/* TODO */ abort()`, down from 50,555 before the x87 compares landed upstream. |
+| Function recovery | **26,075 real ones.** A first pass found 28,597; 2,526 of those were addresses inside instructions and 237 more only showed up once the catalog was complete. 2,586 branch targets then had to be *added*, because clamping a function at a shared epilogue leaves its second half unreachable. |
+| Lifting | **Works.** All 25,838 sized functions lift to **2,099,274 lines of C** in 65 translation units. Not one fails outright. |
+| Instruction coverage | **99.9928%.** 152 emitted lines are unlifted, down from 50,555 before the x87 compares landed upstream and 560 before the false starts went. |
 | Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Boots into the CRT.** The full lifted image builds to a 32.8 MB executable and runs: it maps at `0x00400000`, patches all 495 IAT slots, resolves **455 imports** against the host's own DLLs, and gets through the entry stub, `__security_init_cookie` and `__tmainCRTStartup` into the C initialiser table — 18 guest calls — before hitting the callback gap below. |
+| Runtime | **Boots, threads, and runs its task loop.** The full lifted image builds to a 32.8 MB executable and gets **13,373 guest calls** in: the CRT, every C++ static initialiser, `CoInitialize`, `D3DX10CreateThreadPump`, fourteen engine worker threads, and then a steady `WaitForSingleObject` / `ReleaseMutex` / `Sleep` loop. It dies there on the one thing left — see below. |
 | The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
 
 ### What is still unlifted, in full
@@ -212,6 +213,37 @@ needs per-lane code, and a plausible-looking wrong lane is worse than an honest
 ### Where it stops, exactly
 
 ```
+[hybrid] thread 58884 is now calling back into lifted code (1 so far)
+...
+[hybrid] thread 37920 is now calling back into lifted code (14 so far)
+
+=== the guest faulted ===
+  guest image at 0x00400000, 13373 dispatches so far
+    E530019C  import Sleep (KERNEL32.dll)
+    007457F0  inside the guest image
+    00745B30  inside the guest image
+    007841A0  inside the guest image
+    00744E90  inside the guest image
+    E530019C  import Sleep (KERNEL32.dll)          <- and round again
+```
+
+Two threads faulted at once, which is the diagnosis: **pcrecomp's
+lifted-to-real marshalling is reentrant but not thread-safe** (hybrid's RULE
+4). Its register block is file-scope, so two threads calling a forwarded
+import at the same moment hand each other's registers to each other's target.
+Fourteen threads make that certain rather than unlikely.
+
+`__declspec(thread)` is the obvious fix and does not work — the TLS lookup MSVC
+emits needs eax and ecx, and every reference happens after `mov esp` has
+handed the machine to the guest. Tried, measured (2,015 guest calls down to 3),
+reverted, and written up in the file. What will work is parking the host esp in
+a TEB slot, which needs no registers at all, and using `xchg esp, fs:[0x14]` to
+get the guest's final esp back. That is a rewrite of forty lines of assembly in
+shared code that three other projects use, so it wants its own pass.
+
+### How it got this far
+
+```
 === the guest faulted ===
   guest image at 0x00400000, 18 dispatches so far
   last 16 dispatches (oldest first):
@@ -235,19 +267,18 @@ needs per-lane code, and a plausible-looking wrong lane is worse than an honest
   That address is the import sentinel for __set_app_type (MSVCR100.dll).
 ```
 
-That is the **callback gap**, and nothing else. `_initterm_e` is forwarded to
-the real MSVCR100, which walks the game's C initialiser table in `.rdata` and
-calls each entry — as native code, because the original bytes are still mapped
-at those addresses. So the host runs the *unlifted* original, whose
-`call [__imp___set_app_type]` reads the IAT slot the runtime filled with a
-sentinel and jumps to it.
+Every one of these was found by running it, and each one moved the boot:
 
-Everything up to that point is the recompiled game running correctly.
-
-The fix is already in the submodule: pcrecomp's `hybrid_thunk()` makes an
-address real code can call that lands in lifted code, and
-`hybrid_route_fnptr_slots()` rewrites the data slots that hold guest function
-pointers. It needs wiring in — see [CONTRIBUTING](CONTRIBUTING.md).
+| what was wrong | got to |
+|---|---:|
+| `mainCRTStartup` was past `.text`'s VirtualSize, so the scan never saw it | 0 |
+| `_initterm_e` ran the initialiser table as native code | 18 |
+| `_fmode` is a variable, and its IAT slot held a sentinel | 21 |
+| `0x0081C100` is the third byte of an `fld` and lifted to `hlt` | 111 |
+| a false start's neighbour was clamped onto it and fell into nothing | 637 |
+| a shared epilogue cut a function whose branch targets then had no body | 1,171 |
+| SEH cannot work on a stack the TEB has never heard of | 2,015 |
+| 32 KB is not a stack for a worker thread running the game's call graph | 13,373 |
 
 ### The binary is stripped
 
@@ -273,6 +304,37 @@ this repo to improve.
 ### Where it stops, exactly
 
 ```
+[hybrid] thread 58884 is now calling back into lifted code (1 so far)
+...
+[hybrid] thread 37920 is now calling back into lifted code (14 so far)
+
+=== the guest faulted ===
+  guest image at 0x00400000, 13373 dispatches so far
+    E530019C  import Sleep (KERNEL32.dll)
+    007457F0  inside the guest image
+    00745B30  inside the guest image
+    007841A0  inside the guest image
+    00744E90  inside the guest image
+    E530019C  import Sleep (KERNEL32.dll)          <- and round again
+```
+
+Two threads faulted at once, which is the diagnosis: **pcrecomp's
+lifted-to-real marshalling is reentrant but not thread-safe** (hybrid's RULE
+4). Its register block is file-scope, so two threads calling a forwarded
+import at the same moment hand each other's registers to each other's target.
+Fourteen threads make that certain rather than unlikely.
+
+`__declspec(thread)` is the obvious fix and does not work — the TLS lookup MSVC
+emits needs eax and ecx, and every reference happens after `mov esp` has
+handed the machine to the guest. Tried, measured (2,015 guest calls down to 3),
+reverted, and written up in the file. What will work is parking the host esp in
+a TEB slot, which needs no registers at all, and using `xchg esp, fs:[0x14]` to
+get the guest's final esp back. That is a rewrite of forty lines of assembly in
+shared code that three other projects use, so it wants its own pass.
+
+### How it got this far
+
+```
 === the guest faulted ===
   guest image at 0x00400000, 18 dispatches so far
   last 16 dispatches (oldest first):
@@ -296,19 +358,18 @@ this repo to improve.
   That address is the import sentinel for __set_app_type (MSVCR100.dll).
 ```
 
-That is the **callback gap**, and nothing else. `_initterm_e` is forwarded to
-the real MSVCR100, which walks the game's C initialiser table in `.rdata` and
-calls each entry — as native code, because the original bytes are still mapped
-at those addresses. So the host runs the *unlifted* original, whose
-`call [__imp___set_app_type]` reads the IAT slot the runtime filled with a
-sentinel and jumps to it.
+Every one of these was found by running it, and each one moved the boot:
 
-Everything up to that point is the recompiled game running correctly.
-
-The fix is already in the submodule: pcrecomp's `hybrid_thunk()` makes an
-address real code can call that lands in lifted code, and
-`hybrid_route_fnptr_slots()` rewrites the data slots that hold guest function
-pointers. It needs wiring in — see [CONTRIBUTING](CONTRIBUTING.md).
+| what was wrong | got to |
+|---|---:|
+| `mainCRTStartup` was past `.text`'s VirtualSize, so the scan never saw it | 0 |
+| `_initterm_e` ran the initialiser table as native code | 18 |
+| `_fmode` is a variable, and its IAT slot held a sentinel | 21 |
+| `0x0081C100` is the third byte of an `fld` and lifted to `hlt` | 111 |
+| a false start's neighbour was clamped onto it and fell into nothing | 637 |
+| a shared epilogue cut a function whose branch targets then had no body | 1,171 |
+| SEH cannot work on a stack the TEB has never heard of | 2,015 |
+| 32 KB is not a stack for a worker thread running the game's call graph | 13,373 |
 
 ### The binary is stripped
 
