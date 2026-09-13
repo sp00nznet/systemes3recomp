@@ -25,7 +25,11 @@
 #endif
 
 #include "es3_rt.h"
+#include "hybrid.h"
 #include "recomp_iat.h"
+
+/* src/runtime/hle_callback.c - the real -> lifted side of the boundary. */
+uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args);
 
 #define PAGE       0x1000u
 #define STACK_SZ   (8u << 20)
@@ -247,6 +251,16 @@ int guest_load(const char *exe_path)
      * turns that into an access violation before main. */
     g_stack_pointer = stack_lo + STACK_SZ - PAGE;
     g_stack_pointer &= ~0xFu;
+
+    /* The other direction across the boundary: a real library function calling
+     * back into guest code. hybrid mints a real address per guest function and
+     * runs each nested call on a private arena rather than the host stack -
+     * the host's own C frames keep descending while lifted code runs, and the
+     * two would interleave. See src/runtime/hle_callback.c for who needs it. */
+    if (!hybrid_init(es3_hybrid_invoke, 0, 0)) {
+        fprintf(stderr, "cannot set up the real -> lifted boundary\n");
+        return -1;
+    }
     return 0;
 }
 

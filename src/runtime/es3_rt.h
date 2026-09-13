@@ -119,7 +119,18 @@ int hle_bind_dll(const char *dll, const char *name, HleHandler fn);
  * binds its own on top. */
 void hle_register_all(void);
 void hle_register_native(void);    /* forward to the real DLL, where one exists */
+void hle_register_callbacks(void); /* imports that take a pointer to guest code */
 void hle_register_board(void);     /* JVS, card reader, camera, authentication */
+
+/* An address real code can call that lands in the lifted function at
+ * `guest_va`. Needed whenever a guest function pointer is handed to a real
+ * library - a window procedure, a qsort comparator, an exception filter -
+ * because the original bytes are still mapped at `guest_va` and the host would
+ * run those instead, straight into an IAT full of sentinels.
+ *
+ * dispatch() turns a thunk back into its guest VA, so lifted code reading the
+ * same slot still lands in lifted code. See src/runtime/hle_callback.c. */
+uint32_t es3_callback(uint32_t guest_va);
 
 /* Forward one import to the real function in the host's own copy of the DLL.
  * Returns 0 if the DLL or the export is not there - a cabinet-only DLL, or a

@@ -93,6 +93,9 @@ int hle_purge(HleId id)
 void hle_register_all(void)
 {
     hle_register_native();
+    /* After native, on purpose: these override a forwarded import whose real
+     * body would call back into guest code and run the unlifted original. */
+    hle_register_callbacks();
     hle_register_board();
 }
 

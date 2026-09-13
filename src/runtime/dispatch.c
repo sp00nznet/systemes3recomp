@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 #include "es3_rt.h"
+#include "hybrid.h"
 #include "recomp_funcs_list.h"
 
 #define DECL(a) void L_##a(CPU *c);
@@ -47,8 +48,17 @@ int dispatch_has(uint32_t va) { return find(va) != NULL; }
 
 void dispatch(CPU *c, uint32_t va)
 {
+    uint32_t ova;
+
     es3_note_dispatch(va);
     if (HLE_IS_ADDR(va)) { hle_call(c, HLE_ID_OF(va)); return; }
+
+    /* A thunk address, not a guest VA. Lifted code that reads a slot this
+     * runtime handed to a real library - a window procedure, a comparator -
+     * gets the thunk back, and calling it would go the long way round through
+     * the real->lifted trampoline and arrive here anyway. Short-circuit to the
+     * function it stands for. */
+    if (hybrid_thunk_target(va, &ova)) va = ova;
 
     void (*fn)(CPU *) = find(va);
     if (fn) { fn(c); return; }
