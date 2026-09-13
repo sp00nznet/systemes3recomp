@@ -125,6 +125,27 @@ void es3_report_state(const char *why)
                     "py -3.11 -m tools trail\n");
 }
 
+/* An instruction the lifter could not express, reached at run time.
+ *
+ * Most of the 560 of these in a lifted Mario Kart are not instructions the
+ * game executes - they are data a recovery scan mistook for a function, or the
+ * middle of a real instruction. So reaching one usually means the catalog is
+ * wrong at that address rather than the lifter being short an opcode, and the
+ * address is what says which. */
+void es3_unlifted(uint32_t va, const char *text)
+{
+    fprintf(stderr, "\n[unlifted] %#010x: %s\n", va, text);
+    es3_report_state("how it got there");
+    fprintf(stderr,
+        "  Either the lifter is short this instruction, or - far more often -\n"
+        "  %#010x is not really code: a false function start from the data\n"
+        "  scan, or the middle of a real instruction that a truncated\n"
+        "  neighbour fell into. Check what precedes it before adding an opcode.\n",
+        va);
+    fflush(stderr);
+    abort();
+}
+
 #ifdef _WIN32
 
 static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)

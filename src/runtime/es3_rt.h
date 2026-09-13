@@ -18,7 +18,17 @@
 
 /* Generated code calls abort() wherever an instruction did not lift, so the
  * declaration has to travel with the header the generated code includes. */
+#include <stdint.h>
 #include <stdlib.h>
+
+/* An instruction the lifter could not express. cpu.h makes this a bare
+ * abort(), which in a release build is __fastfail: no vectored handler sees
+ * it, the process is gone, and the log is empty. Two million lines of
+ * generated C need better than that, so it says which guest address and which
+ * mnemonic, and prints how the guest got there. Defined before cpu.h, which
+ * only supplies the default. */
+#define RECOMP_TODO(va, text) es3_unlifted((va), (text))
+void es3_unlifted(uint32_t va, const char *text);
 
 #include "cpu.h"
 

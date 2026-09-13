@@ -4,7 +4,7 @@
   py -3.11 -m tools pe     <game.exe>                       what the PE says it needs
   py -3.11 -m tools scan   <game.exe> <catalog.json>        recover the functions
   py -3.11 -m tools recomp <game.exe> <catalog.json> <out>  lift it to C
-  py -3.11 -m tools trail  [es3_trail.bin] [catalog.json]  read the last run
+  py -3.11 -m tools trail  [es3_trail.bin] [game.exe]      read the last run
 
 `scan` is the slow step - an ES3 binary is stripped, so its function list has
 to be recovered by recursive descent rather than read out of a symbol table.
@@ -98,14 +98,14 @@ def cmd_trail(a):
     n = len(ring)
     print("%d dispatches, last %d kept" % (total, min(total, n)))
 
-    # An import sentinel encodes an index into the sorted (DLL, name) list -
-    # the same order emit_headers() numbers them in, which the catalog's own
-    # import list reproduces. Without a catalog the addresses still print.
+    # An import sentinel encodes an index into the sorted (DLL, name) list,
+    # which is the order emit_headers() numbers them in. Rebuild it from the
+    # executable rather than from a catalog: it is the authority either way,
+    # and a catalog produced by pcrecomp's own CLI carries no imports at all.
     imports = []
-    if a.catalog:
-        with open(a.catalog) as f:
-            imports = sorted({(dll, name)
-                              for _, dll, name in json.load(f).get("imports", [])})
+    if a.exe:
+        pe = pcrecomp.pe()
+        imports = sorted(set(pe.build_iat_map(pe.analyze_pe(a.exe)).values()))
 
     for i in range(max(0, total - n), total):
         va = ring[i % n]
@@ -140,7 +140,7 @@ def main(argv=None):
 
     t = sub.add_parser("trail", help="read the dispatch ring from the last run")
     t.add_argument("trail", nargs="?", default="es3_trail.bin")
-    t.add_argument("catalog", nargs="?", help="name the imports from a catalog")
+    t.add_argument("exe", nargs="?", help="name the imports from the game exe")
     t.set_defaults(fn=cmd_trail)
 
     a = p.parse_args(argv)
