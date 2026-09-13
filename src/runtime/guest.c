@@ -56,14 +56,91 @@ static uint32_t rd16le(const unsigned char *p)
 static void *reserve(uint32_t addr, uint32_t size)
 {
 #ifdef _WIN32
+    void *p = VirtualAlloc((LPVOID)(uintptr_t)addr, size,
+                           MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    if (p) return p;
+    /* Already reserved - by our own parent, before this process's loader ran.
+     * See guest_reserve_image(). Commit inside the existing reservation. */
     return VirtualAlloc((LPVOID)(uintptr_t)addr, size,
-                        MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+                        MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 #else
     void *p = mmap((void *)(uintptr_t)addr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     return p == MAP_FAILED ? NULL : p;
 #endif
 }
+
+#ifdef _WIN32
+/*
+ * Reserving 0x00400000 is not something a process can do for itself.
+ *
+ * Moving the host image off 0x00400000 (see the CMake's /BASE) is necessary
+ * and not sufficient: it frees the address, and then the loader immediately
+ * fills it. By the time any user code runs - before the entry point, before a
+ * TLS callback, before a static initialiser - ntdll has created the process
+ * heap and mapped the NLS sections bottom-up, and they land at 0x060000,
+ * 0x200000, 0x400000, 0x450000, 0x4D0000, 0x540000, 0x670000 ... straight
+ * through the range an ES3 image needs. Measured, not assumed.
+ *
+ * The one moment the range is free is inside a process whose image is mapped
+ * and whose loader has not started - which is exactly what CREATE_SUSPENDED
+ * gives you, from outside. So if the reservation fails, this relaunches
+ * itself suspended, reserves the range in the child through VirtualAllocEx,
+ * resumes it, and exits with the child's status.
+ *
+ * The alternative was to map the image somewhere else and relocate it. cpu.h
+ * has GVA() for exactly that, and it handles addresses embedded in
+ * *instructions* - but not the ones embedded in *data*: a vtable slot read
+ * with rd32 and handed to dispatch() would arrive relocated, and dispatch's
+ * table is keyed by original VA. That is a much larger change than a second
+ * process.
+ */
+#define ES3_CHILD_ENV "ES3_IMAGE_RESERVED"
+
+static int relaunch_reserving(uint32_t base, uint32_t size)
+{
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    wchar_t *cmd;
+    DWORD code = 1;
+
+    if (GetEnvironmentVariableW(L"" ES3_CHILD_ENV, NULL, 0) != 0) {
+        fprintf(stderr,
+            "cannot reserve %#x..%#x even in a fresh process.\n"
+            "  Something else in this process has the range, or the host is a\n"
+            "  64-bit build. Configure with: cmake -B build -A Win32\n",
+            base, base + size);
+        return -1;
+    }
+
+    cmd = GetCommandLineW();
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    SetEnvironmentVariableW(L"" ES3_CHILD_ENV, L"1");
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_SUSPENDED,
+                        NULL, NULL, &si, &pi)) {
+        fprintf(stderr, "cannot relaunch to reserve the image range (%lu)\n",
+                GetLastError());
+        return -1;
+    }
+    /* The child's image is mapped; its loader has not run, so nothing of its
+     * own is in the way yet. Reserve only - the child commits and fills it. */
+    if (!VirtualAllocEx(pi.hProcess, (LPVOID)(uintptr_t)base, size,
+                        MEM_RESERVE, PAGE_READWRITE)) {
+        fprintf(stderr, "cannot reserve %#x..%#x in the child (%lu)\n",
+                base, base + size, GetLastError());
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        return -1;
+    }
+    ResumeThread(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    exit((int)code);
+}
+#endif
 
 int guest_load(const char *exe_path)
 {
@@ -104,13 +181,19 @@ int guest_load(const char *exe_path)
      * game reads across those: .rdata tables run right up to the end of their
      * page and MSVC's CRT walks structures that straddle a boundary. */
     if (!reserve(g_base, image_size)) {
+#ifdef _WIN32
+        /* Does not return on success: it relaunches and exits with the
+         * child's status. See relaunch_reserving(). */
+        free(img);
+        return relaunch_reserving(g_base, image_size);
+#else
         fprintf(stderr,
             "cannot map %#x..%#x.\n"
             "  This is the usual symptom of a 64-bit host: the image wants low\n"
-            "  memory that only exists as an address in a 32-bit process.\n"
-            "  Configure with: cmake -B build -A Win32\n",
+            "  memory that only exists as an address in a 32-bit process.\n",
             g_base, g_base + image_size);
         free(img); return -1;
+#endif
     }
     memset((void *)(uintptr_t)g_base, 0, image_size);
     memcpy((void *)(uintptr_t)g_base, img, hdr_size < (uint32_t)len ? hdr_size : (uint32_t)len);
