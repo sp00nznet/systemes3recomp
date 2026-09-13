@@ -18,9 +18,12 @@
 community hub for sp00nznet's recomp projects.
 
 **Current version: v0.1.0.** The pipeline runs end to end against *Mario Kart
-Arcade GP DX* at **99.97% instruction coverage**, and the recompiled host maps
-the image, answers 455 of its 495 imports out of the host's own DLLs and
-reaches the game's entry point. See [Status](#status) for the numbers.
+Arcade GP DX* at **99.97% instruction coverage**. The whole game builds to a
+32.8 MB native executable and **boots into the C runtime** — through the entry
+stub, `__security_init_cookie` and `__tmainCRTStartup`, with 455 of its 495
+imports answered by the host's own DLLs — and stops at one known architectural
+gap. See [Status](#status) for the numbers and
+[Where it stops](#where-it-stops-exactly) for the gap.
 
 ---
 
@@ -181,7 +184,7 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 | Instruction coverage | **99.9737%.** 560 of 2,126,309 emitted lines are `/* TODO */ abort()`, down from 50,555 before the x87 compares landed upstream. |
 | Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Boots.** Maps the image at `0x00400000`, patches all 495 IAT slots, resolves **455 imports** against the host's own DLLs and reaches the game's entry point. Not yet run against the full lifted image. |
+| Runtime | **Boots into the CRT.** The full lifted image builds to a 32.8 MB executable and runs: it maps at `0x00400000`, patches all 495 IAT slots, resolves **455 imports** against the host's own DLLs, and gets through the entry stub, `__security_init_cookie` and `__tmainCRTStartup` into the C initialiser table — 18 guest calls — before hitting the callback gap below. |
 | The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
 
 ### What is still unlifted, in full
@@ -206,6 +209,46 @@ Packed SSE arithmetic is the one left out deliberately rather than missed: it
 needs per-lane code, and a plausible-looking wrong lane is worse than an honest
 `abort()`.
 
+### Where it stops, exactly
+
+```
+=== the guest faulted ===
+  guest image at 0x00400000, 18 dispatches so far
+  last 16 dispatches (oldest first):
+    E5300130  import LoadLibraryW (KERNEL32.dll)      <- the JVS injection stub
+    007CC173  inside the guest image                  <- mainCRTStartup
+    E53000F8  import GetSystemTimeAsFileTime          <- __security_init_cookie
+    E53000C8  import GetCurrentProcessId
+    E53000CC  import GetCurrentThreadId
+    E53000FC  import GetTickCount
+    E530014C  import QueryPerformanceCounter
+    007CB99B  inside the guest image
+    007CB70B  inside the guest image
+    007CBEB0  inside the guest image
+    E53000F0  import GetStartupInfoW                  <- __tmainCRTStartup
+    E5300108  import HeapSetInformation
+    E5300114  import InterlockedCompareExchange
+    007CC142  inside the guest image
+    E53002FC  import _initterm_e (MSVCR100.dll)       <- and here
+  E5300298 could not be executed   an IMPORT SENTINEL
+
+  That address is the import sentinel for __set_app_type (MSVCR100.dll).
+```
+
+That is the **callback gap**, and nothing else. `_initterm_e` is forwarded to
+the real MSVCR100, which walks the game's C initialiser table in `.rdata` and
+calls each entry — as native code, because the original bytes are still mapped
+at those addresses. So the host runs the *unlifted* original, whose
+`call [__imp___set_app_type]` reads the IAT slot the runtime filled with a
+sentinel and jumps to it.
+
+Everything up to that point is the recompiled game running correctly.
+
+The fix is already in the submodule: pcrecomp's `hybrid_thunk()` makes an
+address real code can call that lands in lifted code, and
+`hybrid_route_fnptr_slots()` rewrites the data slots that hold guest function
+pointers. It needs wiring in — see [CONTRIBUTING](CONTRIBUTING.md).
+
 ### The binary is stripped
 
 Worth saying on its own, because it is the one place this platform is *harder*
@@ -226,6 +269,46 @@ is how you find them.
 That is a quarter of the image reached by a path that should not have been
 needed. It works, and it is not right, and it is the most valuable thing in
 this repo to improve.
+
+### Where it stops, exactly
+
+```
+=== the guest faulted ===
+  guest image at 0x00400000, 18 dispatches so far
+  last 16 dispatches (oldest first):
+    E5300130  import LoadLibraryW (KERNEL32.dll)      <- the JVS injection stub
+    007CC173  inside the guest image                  <- mainCRTStartup
+    E53000F8  import GetSystemTimeAsFileTime          <- __security_init_cookie
+    E53000C8  import GetCurrentProcessId
+    E53000CC  import GetCurrentThreadId
+    E53000FC  import GetTickCount
+    E530014C  import QueryPerformanceCounter
+    007CB99B  inside the guest image
+    007CB70B  inside the guest image
+    007CBEB0  inside the guest image
+    E53000F0  import GetStartupInfoW                  <- __tmainCRTStartup
+    E5300108  import HeapSetInformation
+    E5300114  import InterlockedCompareExchange
+    007CC142  inside the guest image
+    E53002FC  import _initterm_e (MSVCR100.dll)       <- and here
+  E5300298 could not be executed   an IMPORT SENTINEL
+
+  That address is the import sentinel for __set_app_type (MSVCR100.dll).
+```
+
+That is the **callback gap**, and nothing else. `_initterm_e` is forwarded to
+the real MSVCR100, which walks the game's C initialiser table in `.rdata` and
+calls each entry — as native code, because the original bytes are still mapped
+at those addresses. So the host runs the *unlifted* original, whose
+`call [__imp___set_app_type]` reads the IAT slot the runtime filled with a
+sentinel and jumps to it.
+
+Everything up to that point is the recompiled game running correctly.
+
+The fix is already in the submodule: pcrecomp's `hybrid_thunk()` makes an
+address real code can call that lands in lifted code, and
+`hybrid_route_fnptr_slots()` rewrites the data slots that hold guest function
+pointers. It needs wiring in — see [CONTRIBUTING](CONTRIBUTING.md).
 
 ### The binary is stripped
 
