@@ -46,11 +46,43 @@ const char *hle_dll(HleId id)
 
 HleHandler g_hle_handlers[HLE_COUNT];
 
+/* Windows spells it _stricmp and POSIX strcasecmp. DLL names are caseless and
+ * a game's import table is inconsistent about it - IPHLPAPI.DLL next to
+ * ole32.dll in the same table. */
+static int dll_eq(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        int ca = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a;
+        int cb = *b >= 'A' && *b <= 'Z' ? *b + 32 : *b;
+        if (ca != cb) return 0;
+    }
+    return *a == *b;
+}
+
 int hle_bind(const char *name, HleHandler fn)
 {
+    /* Every entry with this name, not the first: MSVC can emit the same import
+     * in more than one IAT slot, and each is its own id. Returns the count, so
+     * 0 still means "this game does not import it", which is not a fault - most
+     * titles do not import most of them. */
+    unsigned n = 0;
     for (unsigned i = 0; i < HLE_COUNT; i++)
-        if (strcmp(g_names[i], name) == 0) { g_hle_handlers[i] = fn; return 1; }
-    return 0;   /* this game does not import it - nothing to bind, not a fault */
+        if (strcmp(g_names[i], name) == 0) { g_hle_handlers[i] = fn; n++; }
+    return (int)n;
+}
+
+int hle_bind_dll(const char *dll, const char *name, HleHandler fn)
+{
+    /* What a board handler must use. The OKAO Vision libraries export by
+     * ordinal only, so eOkaoDt and eOkaoGn both import something called
+     * "ordinal_2" and they are different functions - hle_bind() by name alone
+     * would give face detection's body to gender estimation. */
+    for (unsigned i = 0; i < HLE_COUNT; i++)
+        if (strcmp(g_names[i], name) == 0 && dll_eq(g_dlls[i], dll)) {
+            g_hle_handlers[i] = fn;
+            return 1;
+        }
+    return 0;
 }
 
 int hle_purge(HleId id)

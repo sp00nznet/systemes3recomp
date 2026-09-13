@@ -103,9 +103,17 @@ void hle_call(CPU *c, HleId id);
  * keeps a handler file title-agnostic: HLE_CreateFileW only exists as an
  * enumerator if *this* game imports CreateFileW, so a file that said
  * `g_hle_handlers[HLE_CreateFileW]` would fail to compile against a game that
- * does not. Returns 0 when the game does not import that name, which is not an
- * error - most titles do not import most of them. */
+ * does not. Binds every entry with that name - MSVC can emit one import in
+ * more than one IAT slot - and returns how many, so 0 means the game does not
+ * import it, which is not an error: most titles do not import most of them. */
 int hle_bind(const char *name, HleHandler fn);
+
+/* The same, qualified by DLL, and what a board handler must use. An import's
+ * identity is (DLL, name): the OKAO Vision libraries export by ordinal only,
+ * so eOkaoDt and eOkaoGn both import something called "ordinal_2" and they are
+ * different functions. hle_bind() on that name would give face detection's
+ * body to gender estimation. The DLL comparison is case-insensitive. */
+int hle_bind_dll(const char *dll, const char *name, HleHandler fn);
 
 /* Bind every handler the toolkit ships. A game project calls this once, then
  * binds its own on top. */

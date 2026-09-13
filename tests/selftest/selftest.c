@@ -100,7 +100,7 @@ static void test_purge_unwind(void)
     /* An ordinal-only import from a DLL that exists nowhere but a cabinet
      * still has a derived purge, which is the whole point of reading it out of
      * the callee's own `ret N`. */
-    CHECK(hle_purge(HLE_ordinal_302) == 8);
+    CHECK(hle_purge(HLE_eOkaoDt_ordinal_302) == 8);
     /* And one that could not be derived says so rather than guessing 0. */
     CHECK(hle_purge(HLE_D3DXMatrixMultiply) == -1);
 
@@ -114,11 +114,40 @@ static void test_purge_unwind(void)
     CHECK(c.eax == 0x1234);
 }
 
+/* The bug this pins: an import's identity is (DLL, name). Two cabinet DLLs
+ * exporting the same ordinal must stay two ids with two handlers, or face
+ * detection's calls are answered by gender estimation - which produces no
+ * error anywhere, just wrong behaviour a long way from the cause. */
+static void hit_dt(CPU *c, HleId id) { (void)c; (void)id; g_hit = 101; }
+static void hit_gn(CPU *c, HleId id) { (void)c; (void)id; g_hit = 102; }
+
+static void test_dll_qualified_bind(void)
+{
+    uint32_t stack[4] = { 0x00401234u, 0, 0, 0 };
+    CPU c;
+
+    CHECK(hle_bind_dll("eOkaoDt.dll", "ordinal_302", hit_dt) == 1);
+    CHECK(hle_bind_dll("eokaogn.DLL", "ordinal_302", hit_gn) == 1);  /* caseless */
+    CHECK(hle_bind_dll("eOkaoPt.dll", "ordinal_302", hit_dt) == 0);  /* not imported */
+
+    memset(&c, 0, sizeof c);
+    c.esp = (uint32_t)(uintptr_t)&stack[0];
+    g_hit = 0; hle_call(&c, HLE_eOkaoDt_ordinal_302); CHECK(g_hit == 101);
+    memset(&c, 0, sizeof c);
+    c.esp = (uint32_t)(uintptr_t)&stack[0];
+    g_hit = 0; hle_call(&c, HLE_eOkaoGn_ordinal_302); CHECK(g_hit == 102);
+
+    /* ...and they can have different purges, because they are different
+     * functions that happen to share a number. */
+    CHECK(hle_purge(HLE_eOkaoDt_ordinal_302) == 8);
+    CHECK(hle_purge(HLE_eOkaoGn_ordinal_302) == 12);
+}
+
 static void test_names(void)
 {
     CHECK(strcmp(hle_name(HLE_Sleep), "Sleep") == 0);
     CHECK(strcmp(hle_dll(HLE_Sleep), "KERNEL32.dll") == 0);
-    CHECK(HLE_COUNT == 4);
+    CHECK(HLE_COUNT == 5);
 
     /* The board notes are what turn "eOkaoDt.dll ordinal_302 is not
      * implemented" into a sentence worth reading. */
@@ -132,8 +161,10 @@ int main(void)
     test_dispatch();
     test_sentinel_range();
     test_purge_unwind();
+    test_dll_qualified_bind();
     test_names();
     if (fails) { fprintf(stderr, "%d check(s) failed\n", fails); return 1; }
-    printf("ok: dispatch table, sentinel range, purge unwind, board notes\n");
+    printf("ok: dispatch table, sentinel range, purge unwind, "
+           "DLL-qualified binding, board notes\n");
     return 0;
 }

@@ -73,8 +73,14 @@ def test_emit_headers():
         # The same name in two slots: MSVC does emit this, and every slot has
         # to be patched or the second one calls into the unmapped IAT.
         0x0081D00C: ("KERNEL32.dll", "Sleep"),
+        # And the same name in two DIFFERENT DLLs, which is not the same thing
+        # at all. The OKAO Vision libraries export by ordinal only, so these
+        # are two unrelated functions that share a number. Collapsing them
+        # routed face detection's calls into gender estimation.
+        0x0081D010: ("eOkaoGn.dll", "ordinal_302"),
     }
-    purge = {"Sleep": 4, "memcpy": 0, "ordinal_302": 8}
+    purge = {("KERNEL32.dll", "Sleep"): 4, ("MSVCR100.dll", "memcpy"): 0,
+             ("eOkaoDt.dll", "ordinal_302"): 8, ("eOkaoGn.dll", "ordinal_302"): 12}
     with tempfile.TemporaryDirectory() as d:
         driver.emit_headers(d, [0x401000, 0x401200], iat, purge)
         imports = open(os.path.join(d, "recomp_imports.h")).read()
@@ -86,23 +92,33 @@ def test_emit_headers():
           "stdcall import row wrong: " + imports)
     check('X(HLE_memcpy, "memcpy", "MSVCR100.dll", 0)' in imports,
           "cdecl import row wrong")
-    check('X(HLE_ordinal_302, "ordinal_302", "eOkaoDt.dll", 8)' in imports,
-          "ordinal import row wrong")
 
-    # One row per NAME here - three names from four slots.
-    check(imports.count("X(HLE_") == 3, "imports deduplicated wrongly")
+    # An ambiguous name takes its DLL's stem as a prefix; an unambiguous one
+    # must NOT, because HLE_Sleep is what a handler file writes.
+    check('X(HLE_eOkaoDt_ordinal_302, "ordinal_302", "eOkaoDt.dll", 8)' in imports,
+          "ordinal import row wrong: " + imports)
+    check('X(HLE_eOkaoGn_ordinal_302, "ordinal_302", "eOkaoGn.dll", 12)' in imports,
+          "the second DLL's ordinal was dropped or merged")
+    check("X(HLE_ordinal_302," not in imports, "ambiguous name left unqualified")
 
-    # ...but one row per SLOT there, and both Sleep slots map to the same id.
-    check(slots.count("X(0x") == 4, "a slot was dropped: " + slots)
+    # One row per (DLL, NAME) - four from five slots, not three.
+    check(imports.count("X(HLE_") == 4, "imports deduplicated wrongly: " + imports)
+
+    # ...but one row per SLOT there, and the two Sleep slots share an id while
+    # the two ordinal_302 slots do not.
+    check(slots.count("X(0x") == 5, "a slot was dropped: " + slots)
     ids = dict(re.findall(r"X\(0x([0-9A-F]+)u, (\d+)\)", slots))
     check(ids.get("0081D000") == ids.get("0081D00C"),
           "the same import got two different ids")
+    check(ids.get("0081D008") != ids.get("0081D010"),
+          "two different DLLs' ordinal_302 got the same id")
 
     # The id is an index into the import list, so the list must be sorted and
     # the ids must agree with that order.
-    names = re.findall(r'X\(HLE_\w+, "([^"]+)"', imports)
-    check(names == sorted(names), "import order is not stable: %r" % (names,))
-    check(int(ids["0081D004"]) == names.index("memcpy"),
+    rows = re.findall(r'X\(\w+, "([^"]+)", "([^"]+)"', imports)
+    pairs = [(dll, name) for name, dll in rows]
+    check(pairs == sorted(pairs), "import order is not stable: %r" % (pairs,))
+    check(int(ids["0081D004"]) == pairs.index(("MSVCR100.dll", "memcpy")),
           "slot id does not index the import list")
 
     check("X(00401000)" in funcs and "X(00401200)" in funcs, "function list wrong")
