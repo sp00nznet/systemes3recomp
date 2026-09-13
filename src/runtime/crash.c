@@ -32,20 +32,57 @@
 
 #include "es3_rt.h"
 
-/* ponytail: a 16-entry ring, written on every dispatch. It costs a store and a
- * mask per guest call, which does not show up next to the work a call does.
- * If it ever does, make it a build option rather than deleting it - the trail
- * is most of the value here. */
-#define TRAIL 16
-static uint32_t g_trail[TRAIL];
-static unsigned g_trail_i;
-static unsigned long g_dispatches;
+/* ponytail: a ring written on every dispatch. It costs two stores and a mask
+ * per guest call, which does not show up next to the work a call does. If it
+ * ever does, make it a build option rather than deleting it - the trail is
+ * most of the value here. */
+#define TRAIL 1024
+static uint32_t  g_fallback[TRAIL + 2];
+static uint32_t *g_ring = g_fallback;     /* [0]=count, [1]=depth, [2..]=entries */
 static const CPU *g_cpu;
+
+#define RING_COUNT  g_ring[0]
+#define RING_AT(i)  g_ring[2 + ((i) & (TRAIL - 1))]
 
 void es3_note_dispatch(uint32_t va)
 {
-    g_trail[g_trail_i++ & (TRAIL - 1)] = va;
-    g_dispatches++;
+    RING_AT(RING_COUNT) = va;
+    RING_COUNT++;
+}
+
+/*
+ * The ring lives in a memory-mapped file, because the interesting deaths are
+ * the ones no handler sees.
+ *
+ * A forwarded CRT that gives up calls `__fastfail`, and that is not an
+ * exception: not a vectored handler, not an unhandled-exception filter, not
+ * an SEH frame. The process is simply gone, exit code 0xC0000409, having
+ * printed nothing. A trail that only exists in this process's memory goes with
+ * it, and the run says nothing about how it got there.
+ *
+ * Mapped to a file, the last thousand guest calls are still on disk
+ * afterwards. `es3_trail.bin`, in the working directory, dumped by
+ * `py -3.11 -m tools trail`.
+ */
+static void open_trail(void)
+{
+#ifdef _WIN32
+    HANDLE f = CreateFileA("es3_trail.bin", GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE m;
+    void *v;
+    if (f == INVALID_HANDLE_VALUE) return;
+    m = CreateFileMappingA(f, NULL, PAGE_READWRITE, 0,
+                           (TRAIL + 2) * sizeof(uint32_t), NULL);
+    CloseHandle(f);
+    if (!m) return;
+    v = MapViewOfFile(m, FILE_MAP_WRITE, 0, 0, 0);
+    CloseHandle(m);
+    if (!v) return;
+    memset(v, 0, (TRAIL + 2) * sizeof(uint32_t));
+    g_ring = (uint32_t *)v;
+#endif
 }
 
 void es3_watch_cpu(const CPU *c) { g_cpu = c; }
@@ -61,10 +98,13 @@ static const char *region_of(uint32_t va)
 
 void es3_report_state(const char *why)
 {
+    unsigned total = RING_COUNT;
+    unsigned show = total < 24 ? total : 24;
     unsigned i;
+
     fprintf(stderr, "\n=== %s ===\n", why);
-    fprintf(stderr, "  guest image at %#010x, %lu dispatches so far\n",
-            guest_image_base(), g_dispatches);
+    fprintf(stderr, "  guest image at %#010x, %u dispatches so far\n",
+            guest_image_base(), total);
     if (g_cpu) {
         const CPU *c = g_cpu;
         fprintf(stderr, "  eax=%08X ecx=%08X edx=%08X ebx=%08X\n",
@@ -72,16 +112,17 @@ void es3_report_state(const char *why)
         fprintf(stderr, "  esp=%08X ebp=%08X esi=%08X edi=%08X\n",
                 c->esp, c->ebp, c->esi, c->edi);
     }
-    fprintf(stderr, "  last %d dispatches (oldest first):\n", TRAIL);
-    for (i = 0; i < TRAIL; i++) {
-        uint32_t va = g_trail[(g_trail_i + i) & (TRAIL - 1)];
-        if (!va) continue;
+    fprintf(stderr, "  last %u dispatches (oldest first):\n", show);
+    for (i = total - show; i < total; i++) {
+        uint32_t va = RING_AT(i);
         if (HLE_IS_ADDR(va))
             fprintf(stderr, "    %08X  import %s (%s)\n", va,
                     hle_name(HLE_ID_OF(va)), hle_dll(HLE_ID_OF(va)));
         else
             fprintf(stderr, "    %08X  %s\n", va, region_of(va));
     }
+    fprintf(stderr, "  the whole trail is in es3_trail.bin - "
+                    "py -3.11 -m tools trail\n");
 }
 
 #ifdef _WIN32
@@ -130,9 +171,10 @@ void es3_install_crash_handler(void)
     static int done;
     if (done) return;
     done = 1;
+    open_trail();
     AddVectoredExceptionHandler(1, es3_veh);
 }
 
 #else
-void es3_install_crash_handler(void) { }
+void es3_install_crash_handler(void) { open_trail(); }
 #endif

@@ -4,6 +4,7 @@
   py -3.11 -m tools pe     <game.exe>                       what the PE says it needs
   py -3.11 -m tools scan   <game.exe> <catalog.json>        recover the functions
   py -3.11 -m tools recomp <game.exe> <catalog.json> <out>  lift it to C
+  py -3.11 -m tools trail  [es3_trail.bin] [catalog.json]  read the last run
 
 `scan` is the slow step - an ES3 binary is stripped, so its function list has
 to be recovered by recursive descent rather than read out of a symbol table.
@@ -12,6 +13,7 @@ It writes a catalog you keep and reuse; `recomp` is minutes, not hours.
 
 import argparse
 import collections
+import json
 import sys
 
 from . import pcrecomp
@@ -77,6 +79,44 @@ def cmd_recomp(a):
           % (len(done), len(imports), a.outdir))
 
 
+def cmd_trail(a):
+    """The dispatch ring the runtime leaves behind.
+
+    It is a memory-mapped file because the interesting deaths are the ones no
+    handler sees: a forwarded CRT that gives up calls __fastfail, which is not
+    an exception, and the process is simply gone with nothing printed. The ring
+    is still on disk afterwards."""
+    import struct
+
+    raw = open(a.trail, "rb").read()
+    if len(raw) < 8:
+        sys.exit("%s is too short to be a trail" % a.trail)
+    from .recomp.driver import HLE_BASE, HLE_STRIDE
+
+    words = struct.unpack("<%dI" % (len(raw) // 4), raw[:len(raw) // 4 * 4])
+    total, ring = words[0], words[2:]
+    n = len(ring)
+    print("%d dispatches, last %d kept" % (total, min(total, n)))
+
+    # An import sentinel encodes an index into the sorted (DLL, name) list -
+    # the same order emit_headers() numbers them in, which the catalog's own
+    # import list reproduces. Without a catalog the addresses still print.
+    imports = []
+    if a.catalog:
+        with open(a.catalog) as f:
+            imports = sorted({(dll, name)
+                              for _, dll, name in json.load(f).get("imports", [])})
+
+    for i in range(max(0, total - n), total):
+        va = ring[i % n]
+        who = ""
+        if HLE_BASE <= va < HLE_BASE + HLE_STRIDE * max(len(imports), 1):
+            k = (va - HLE_BASE) // HLE_STRIDE
+            who = ("import %s (%s)" % (imports[k][1], imports[k][0])
+                   if k < len(imports) else "import #%d" % k)
+        print("  %6d  %08X  %s" % (i, va, who))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="tools", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -97,6 +137,11 @@ def main(argv=None):
     r.add_argument("outdir")
     r.add_argument("addrs", nargs="*", help="lift only these (hex); default all")
     r.set_defaults(fn=cmd_recomp)
+
+    t = sub.add_parser("trail", help="read the dispatch ring from the last run")
+    t.add_argument("trail", nargs="?", default="es3_trail.bin")
+    t.add_argument("catalog", nargs="?", help="name the imports from a catalog")
+    t.set_defaults(fn=cmd_trail)
 
     a = p.parse_args(argv)
     a.fn(a)
