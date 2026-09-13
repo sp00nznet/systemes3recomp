@@ -61,13 +61,37 @@ function(es3_runtime target generated_dir)
     )
     # Generated code is correct and ugly: it converts between widths on every
     # other line and leaves labels no branch reaches.
+    # C4733 is the SEH prologue: lifted `mov fs:[0], eax` is an __asm write to
+    # FS:0, which MSVC cannot register as a safe handler. That is not a defect
+    # in the output - the handler is the game's own, at an address only the
+    # lifted image knows - so the warning is off and so is /SAFESEH, which
+    # would otherwise refuse to link an image containing one.
     target_compile_options(${target} PRIVATE
-        /W1 /wd4244 /wd4267 /wd4018 /wd4102 /wd4101 /wd4146 /wd4996)
-    # No ASLR: the image is mapped at the address it was linked for, and none
-    # of these titles set DYNAMIC_BASE either. The guest gets its own 8 MB
-    # stack, but the host thread runs the dispatcher on top of the recursion
-    # the game's own call graph produces, so give it room.
-    target_link_options(${target} PRIVATE /DYNAMICBASE:NO /STACK:16777216)
+        /W1 /wd4244 /wd4267 /wd4018 /wd4102 /wd4101 /wd4146 /wd4996 /wd4733)
+    # /BASE is the one that is not obvious and is not optional. A 32-bit MSVC
+    # executable defaults to ImageBase 0x00400000 - which is exactly where an
+    # ES3 title is linked, so the host lands on top of the guest and
+    # guest_load() cannot reserve the range it needs. Move the host somewhere
+    # the game does not want; 0x20000000 is clear of the image, of the heap the
+    # guest grows into, and of the import sentinels at 0xE5300000.
+    #
+    # /DYNAMICBASE:NO keeps it there: with ASLR the host is relocated on every
+    # run and would sometimes be moved back over the low addresses. None of
+    # these titles set DYNAMIC_BASE either, which is why nothing relocates.
+    #
+    # The guest gets its own 8 MB stack, but the host thread runs the
+    # dispatcher on top of whatever recursion the game's call graph produces,
+    # so give it room.
+    target_link_options(${target} PRIVATE
+        /DYNAMICBASE:NO /SAFESEH:NO /STACK:16777216)
+    # /BASE has to go through LINK_FLAGS and not target_link_options: the
+    # Visual Studio generator maps the other three onto MSBuild properties and
+    # silently DROPS anything it has no property for, so /BASE never reached
+    # the linker and the host kept landing on 0x00400000. LINK_FLAGS lands in
+    # AdditionalOptions verbatim. Check it took, do not assume:
+    #   dumpbin /headers mygame.exe | findstr "image base"
+    set_property(TARGET ${target} APPEND_STRING PROPERTY
+                 LINK_FLAGS " /BASE:0x20000000")
 endfunction()
 
 # Self-check: builds the runtime against stub generated headers and exercises
