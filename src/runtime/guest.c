@@ -264,6 +264,17 @@ int guest_load(const char *exe_path)
     return 0;
 }
 
+void guest_patch_import(HleId id, uint32_t value)
+{
+    /* One import can occupy several slots, and every one of them has to change
+     * - the linker emits a second when the same name is referenced from a
+     * different object, and a data import missed in one slot faults the first
+     * time that reference is used, which may be much later than the other. */
+#define PATCH(slot_va, sid) if ((HleId)(sid) == id) wr32((uint32_t)(slot_va), value);
+    IAT_SLOTS(PATCH)
+#undef PATCH
+}
+
 uint32_t guest_entry(void)      { return g_entry; }
 uint32_t guest_image_base(void) { return g_base; }
 

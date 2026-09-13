@@ -125,6 +125,40 @@ static void native_thunk(CPU *c, HleId id)
     }
 }
 
+/* Which imports turned out to be variables rather than functions. */
+static unsigned char g_is_data[HLE_COUNT];
+
+int hle_is_data(HleId id) { return (unsigned)id < HLE_COUNT && g_is_data[id]; }
+
+/* An import is DATA if the address the DLL exports is not executable.
+ *
+ * The C runtime exports plenty of these - `_fmode`, `_commode`, `_environ`,
+ * `_iob`, `_pctype` - and a game does not call them, it dereferences them. So
+ * their IAT slot must hold the real address in the real DLL, not a sentinel;
+ * the first write through one is otherwise a fault on an unmapped page, and it
+ * reads as a call to a function that never happened.
+ *
+ * Asking the page rather than keeping a list of names: the list would be wrong
+ * for the next C runtime, and there is no reason to guess when the loader
+ * already knows. VirtualQuery on what GetProcAddress returned is the answer.
+ */
+static int address_is_code(FARPROC p)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery((LPCVOID)p, &mbi, sizeof mbi)) return 1;   /* assume code */
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                           PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
+static void data_import_called(CPU *c, HleId id)
+{
+    (void)c;
+    fprintf(stderr,
+            "[hle] %s (%s) is a variable, not a function, and something called "
+            "it.\n", hle_name(id), hle_dll(id));
+    abort();
+}
+
 int hle_bind_native(HleId id)
 {
     const char *name = hle_name(id);
@@ -144,6 +178,15 @@ int hle_bind_native(HleId id)
     else
         p = GetProcAddress(h, name);
     if (!p) return 0;
+
+    if (!address_is_code(p)) {
+        /* The slot holds the address of a variable in the real DLL, and the
+         * game reaches it by dereferencing rather than calling. */
+        g_is_data[id] = 1;
+        guest_patch_import(id, (uint32_t)(uintptr_t)p);
+        g_hle_handlers[id] = data_import_called;
+        return 1;
+    }
 
     for (i = 0; i < sizeof CI_HELPERS / sizeof CI_HELPERS[0]; i++)
         if (strcmp(name, CI_HELPERS[i].name) == 0) {

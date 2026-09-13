@@ -137,6 +137,18 @@ uint32_t es3_callback(uint32_t guest_va);
  * redistributable this machine does not have. */
 int hle_bind_native(HleId id);
 
+/* Rewrite every IAT slot belonging to one import. guest_load() fills them all
+ * with sentinels, which is right for a function and wrong for an import that
+ * is DATA - `_fmode`, `_commode`, `_environ` and the rest of the C runtime's
+ * exported variables. The game does not call those, it dereferences them, so
+ * their slot has to hold the real address in the real DLL. hle_bind_native()
+ * tells them apart by asking whether the page GetProcAddress returned is
+ * executable, and calls this for the ones that are not. */
+void guest_patch_import(HleId id, uint32_t value);
+
+/* Was this import resolved as data rather than a function? */
+int hle_is_data(HleId id);
+
 /* Name and originating DLL for an id, for diagnostics. */
 const char *hle_name(HleId id);
 const char *hle_dll(HleId id);
