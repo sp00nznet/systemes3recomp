@@ -194,6 +194,25 @@ void dispatch_jmp(CPU *c, uint32_t va);
  * handing the guest a callback address. */
 int dispatch_has(uint32_t va);
 
+/* ---- bring-up diagnostics (src/runtime/crash.c) ----
+ *
+ * A fault in lifted code shows a debugger `L_004A0550` in a two-million-line
+ * generated file. These turn it into the guest's own terms: which functions
+ * were dispatched, what address was reached for, and whether it was an import
+ * sentinel - which is the signature of a callback running unlifted code.
+ */
+void es3_install_crash_handler(void);
+
+/* Remember a CPU so the crash report can print it. The host's own, normally. */
+void es3_watch_cpu(const CPU *c);
+
+/* Print the simulated machine's state. The handler calls it; so can a shim
+ * that has noticed something impossible. */
+void es3_report_state(const char *why);
+
+/* Called by dispatch() on every guest call, to keep the trail. */
+void es3_note_dispatch(uint32_t va);
+
 #ifdef __cplusplus
 }
 #endif

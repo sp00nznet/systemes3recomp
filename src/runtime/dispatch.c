@@ -47,6 +47,7 @@ int dispatch_has(uint32_t va) { return find(va) != NULL; }
 
 void dispatch(CPU *c, uint32_t va)
 {
+    es3_note_dispatch(va);
     if (HLE_IS_ADDR(va)) { hle_call(c, HLE_ID_OF(va)); return; }
 
     void (*fn)(CPU *) = find(va);
@@ -59,6 +60,7 @@ void dispatch(CPU *c, uint32_t va)
     fprintf(stderr,
             "[dispatch] no lifted function at %#010x (esp=%#010x)\n"
             "           add it as a seed and re-scan.\n", va, c->esp);
+    es3_report_state("unresolved dispatch");
     abort();
 }
 

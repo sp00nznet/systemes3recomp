@@ -66,6 +66,36 @@ JVSEmuMK.dll   engate      (1 export, 1 import)
 Only the `v1.06.35 OF` build imports it directly; `v1.00.32` and `v1.18.16` go
 through `DeviceIoControl`, which is forwarded to the host and fails.
 
+### How the DLL actually gets in
+
+Not through the import table, on `v1.00.32`. Running the recompiled game
+revealed it: **the PE entry point has been patched to load it.** `0x007CB996`
+is a five-byte thunk to `0x0081CDB2`, and that is:
+
+```
+0081cdb2  push 0x0081cda0            ; L"JVSEmuMK", in .text's raw tail
+0081cdb7  call dword ptr [0x0081d1a4] ; KERNEL32!LoadLibraryW
+0081cdbd  call 0x007cc173            ; the real mainCRTStartup
+0081cdc2  jmp  0x007cb99b
+```
+
+So a conversion tree injects the I/O layer by rewriting the entry point to
+`LoadLibraryW(L"JVSEmuMK")` before the CRT starts, and the DLL hooks
+`DeviceIoControl` (or DirectInput) from inside. The return value is not even
+checked — the stub falls straight through to the CRT whether the load worked or
+not, which is why the game still starts on a machine without it.
+
+Two things follow. A recompiled build gets the same behaviour for free: the
+call is forwarded to the host's real `LoadLibraryW`, so putting `JVSEmuMK.dll`
+next to the executable loads the real thing. And it is why that stub sits at
+`0x0081CDB2` — 0x36 bytes past `.text`'s VirtualSize, in the raw tail, where a
+patcher had room. pcrecomp's code range stopped at VirtualSize and excluded it,
+which is how this was found at all.
+
+`v1.06.35 OF` does it differently and imports `JVSEmuMK.dll!engate` outright.
+
+### What still has to be produced
+
 Either path ends in the same place: something has to produce a JVS report with
 a wheel position, two analogue pedals, the item and view buttons, coin counters
 and the service/test switches. **The report layout is not in this repo and has
