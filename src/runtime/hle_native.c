@@ -75,7 +75,9 @@ static const struct { const char *name; unsigned char argc; } CI_HELPERS[] = {
 
 /* One handler for every forwarded import - which id it is arrives as an
  * argument, so there is no need to generate hundreds of identical stubs. */
-static void native_thunk(CPU *c, HleId id)
+static void native_thunk(CPU *c, HleId id) { hle_call_native(c, id); }
+
+void hle_call_native(CPU *c, HleId id)
 {
     hybrid_regs r;
     int n = g_fpu_args[id];

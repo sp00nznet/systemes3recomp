@@ -123,14 +123,78 @@ static void hle_initterm_e(CPU *c, HleId id)
     RET(run_initterm(c, 1));
 }
 
-/* ---- registration ---- */
+/* ---- pointers handed out to real code ----
+ *
+ * `_onexit(f)`, `signal(sig, f)`, `qsort(..., cmp)`,
+ * `SetUnhandledExceptionFilter(f)`: the real library stores the pointer and
+ * calls it later, from code this runtime has no say in. Swap the guest address
+ * for a thunk on the way past and forward the call unchanged.
+ *
+ * The swap is written into the caller's own argument slot, which is how the
+ * real function is going to read it. A caller that re-reads its pushed
+ * argument afterwards would see the thunk instead - possible in principle,
+ * not something MSVC-generated code does, and the alternative is copying the
+ * whole frame to change one word.
+ */
+static void wrap_callback_arg(CPU *c, HleId id, unsigned argno)
+{
+    uint32_t va = A32(argno);
+    uint32_t base = guest_image_base();
+
+    /* Only a pointer into the guest image is guest code. NULL is meaningful to
+     * several of these (signal(SIG_DFL), a filter being cleared), and a
+     * pointer the game got from the host belongs to the host. */
+    if (va >= base && va < base + guest_image_size())
+        wr32(c->esp + 4u + 4u * argno, es3_callback(va));
+
+    hle_call_native(c, id);
+}
+
+static void hle_onexit(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
+static void hle_seh_filter(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
+static void hle_signal(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
+static void hle_qsort(CPU *c, HleId id) { wrap_callback_arg(c, id, 3); }
+
+/* ---- the ways a CRT gives up ----
+ *
+ * Every one of these ends the process, and forwarded to the real DLL they end
+ * it through `__fastfail`, which no exception handler sees: the run dies with
+ * 0xC0000409 and prints nothing at all. Saying which one was reached, and
+ * what the guest was doing, is the difference between a diagnosis and a
+ * shrug - so each says so and then does what it was going to do anyway.
+ */
+static void hle_give_up(CPU *c, HleId id)
+{
+    fprintf(stderr, "\n[exit] the guest called %s (%s)\n",
+            hle_name(id), hle_dll(id));
+    es3_report_state("how it got there");
+    hle_call_native(c, id);
+}
 
 void hle_register_callbacks(void)
 {
-    unsigned n = 0;
-    n += (unsigned)hle_bind("_initterm", hle_initterm);
-    n += (unsigned)hle_bind("_initterm_e", hle_initterm_e);
-    if (n)
-        fprintf(stderr, "[hle] %u initialiser-table import(s) taken over from "
-                        "the host, so their entries run lifted\n", n);
+    unsigned tables = 0, ptrs = 0, exits = 0;
+
+    tables += (unsigned)hle_bind("_initterm", hle_initterm);
+    tables += (unsigned)hle_bind("_initterm_e", hle_initterm_e);
+
+    ptrs += (unsigned)hle_bind("_onexit", hle_onexit);
+    ptrs += (unsigned)hle_bind("atexit", hle_onexit);
+    ptrs += (unsigned)hle_bind("signal", hle_signal);
+    ptrs += (unsigned)hle_bind("qsort", hle_qsort);
+    ptrs += (unsigned)hle_bind("SetUnhandledExceptionFilter", hle_seh_filter);
+
+    exits += (unsigned)hle_bind("abort", hle_give_up);
+    exits += (unsigned)hle_bind("exit", hle_give_up);
+    exits += (unsigned)hle_bind("_exit", hle_give_up);
+    exits += (unsigned)hle_bind("_cexit", hle_give_up);
+    exits += (unsigned)hle_bind("_amsg_exit", hle_give_up);
+    exits += (unsigned)hle_bind("_invoke_watson", hle_give_up);
+    exits += (unsigned)hle_bind("TerminateProcess", hle_give_up);
+    exits += (unsigned)hle_bind("UnhandledExceptionFilter", hle_give_up);
+
+    fprintf(stderr,
+            "[hle] %u initialiser table(s) walked here so their entries run "
+            "lifted, %u callback pointer(s) thunked, %u exit path(s) traced\n",
+            tables, ptrs, exits);
 }

@@ -43,6 +43,7 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args);
 static uint32_t g_entry;
 static uint32_t g_base;
 static uint32_t g_stack_pointer;
+static uint32_t g_image_size;
 
 uint32_t g_image_delta = 0;       /* cpu.h's GVA(): we map where it asked */
 
@@ -178,6 +179,7 @@ int guest_load(const char *exe_path)
     g_base      = rd32le(opt + 28);
     g_entry     = g_base + rd32le(opt + 16);
     uint32_t image_size = rd32le(opt + 56);
+    g_image_size = image_size;
     uint32_t hdr_size   = rd32le(opt + 60);
 
     /* One reservation for the whole image, then the sections copied into it.
@@ -277,6 +279,7 @@ void guest_patch_import(HleId id, uint32_t value)
 
 uint32_t guest_entry(void)      { return g_entry; }
 uint32_t guest_image_base(void) { return g_base; }
+uint32_t guest_image_size(void) { return g_image_size; }
 
 void guest_init_cpu(CPU *c)
 {

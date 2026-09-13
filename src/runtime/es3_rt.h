@@ -46,6 +46,9 @@ void guest_init_cpu(CPU *c);
  * relocates. cpu.h's GVA() reads g_image_delta, which stays 0 in that case. */
 uint32_t guest_image_base(void);
 
+/* SizeOfImage, so a pointer can be tested for being guest code at all. */
+uint32_t guest_image_size(void);
+
 /* ---- the import boundary ----
  *
  * A PE reaches its libraries through the IAT: `call dword ptr [__imp_X]` reads
@@ -148,6 +151,12 @@ void guest_patch_import(HleId id, uint32_t value);
 
 /* Was this import resolved as data rather than a function? */
 int hle_is_data(HleId id);
+
+/* Do the forwarding call for an import that hle_bind_native() resolved. A
+ * handler that only needs to adjust an argument before the real function sees
+ * it - swapping a guest callback pointer for a thunk, say - delegates here
+ * rather than reimplementing the call. */
+void hle_call_native(CPU *c, HleId id);
 
 /* Name and originating DLL for an id, for diagnostics. */
 const char *hle_name(HleId id);
