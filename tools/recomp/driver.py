@@ -111,7 +111,7 @@ def scan(exe_path, out_json=None):
     return info, funcs, iat
 
 
-def load_catalog(path, code_end=None):
+def load_catalog(path, code_end=None, read_va=None, code_start=None):
     """A catalog as `scan` writes it, or as pcrecomp's disasm32 CLI writes it -
     they are different shapes and both are worth accepting, because a scan
     takes half an hour and gets run once by hand with whichever tool was there.
@@ -142,6 +142,23 @@ def load_catalog(path, code_end=None):
 
     if code_end is None:
         code_end = max((a + s for a, s in funcs.items()), default=0)
+
+    # Drop entries that are not instruction boundaries, and do it BEFORE the
+    # clamp. An address inside an instruction decodes as a stream the program
+    # never runs, lifts and compiles perfectly well, and killed a boot with a
+    # `hlt` in the middle of a C++ initialiser.
+    #
+    # Order matters both ways round. The check has to run first because the
+    # clamp is what shortened the real function onto the false start, and it
+    # has to be followed by the clamp because a function cut at an entry that
+    # is now gone would fall through to an address nothing lifts.
+    if read_va is not None:
+        gone = pcrecomp.disasm().drop_mid_instruction_entries(
+            read_va, funcs, code_start if code_start is not None else 0, code_end)
+        if gone:
+            print("[*] %d catalog entries were inside an instruction, not at one"
+                  % gone, file=sys.stderr)
+
     before = sum(funcs.values())
     # Only function starts may act as a limit: clamping against an alias would
     # truncate the function it sits inside. The aliases are still clamped
@@ -164,27 +181,14 @@ def recompile(exe_path, catalog_path, outdir, addrs=None, split=400,
     Returns (functions lifted, (dll, name) pairs for every import)."""
     pe, lift = pcrecomp.pe(), pcrecomp.lifter()
     info = pe.analyze_pe(exe_path)
-    funcs, iat = load_catalog(catalog_path, info.code_end)
+    read_va = _reader(exe_path, info.image_base)
+    funcs, iat = load_catalog(catalog_path, info.code_end, read_va, info.code_start)
     if not iat:                       # a catalog from pcrecomp's CLI carries none
         iat = pe.build_iat_map(info)
 
     lift.IMAGE_BASE = info.image_base           # read by Lifter.__init__
-    read_va = _reader(exe_path, info.image_base)
     lifter = lift.Lifter(exe_path, _size_of_image(exe_path), read_va)
     lifter.reloc_vas = _reloc_vas(exe_path, info.image_base)
-
-    # An entry that is not an instruction boundary decodes as a stream the
-    # program never runs, and lifts and compiles perfectly well - which is how
-    # `hlt` ended up in the middle of a C++ initialiser and killed a boot a
-    # thousand calls in. The scan refuses these now, but doing it here as well
-    # means a catalog made before it does not need the half hour again, and it
-    # is idempotent on one made after.
-    dis = pcrecomp.disasm()
-    gone = dis.drop_mid_instruction_entries(read_va, funcs,
-                                            info.code_start, info.code_end)
-    if gone:
-        print("[*] %d catalog entries were inside an instruction, not at one"
-              % gone, file=sys.stderr)
 
     targets = sorted(addrs) if addrs else sorted(funcs)
     os.makedirs(outdir, exist_ok=True)

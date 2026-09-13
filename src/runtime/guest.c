@@ -254,6 +254,38 @@ int guest_load(const char *exe_path)
     g_stack_pointer = stack_lo + STACK_SZ - PAGE;
     g_stack_pointer &= ~0xFu;
 
+#ifdef _WIN32
+    /* Tell the TEB about the guest stack, or nothing that uses SEH works.
+     *
+     * Windows validates an exception handler by checking that its frame lies
+     * between NT_TIB.StackLimit and StackBase. Lifted code runs on a stack this
+     * runtime allocated, which is nowhere near the thread stack the TEB
+     * describes - so a handler registered while the guest is running is
+     * rejected, RtlDispatchException finds nobody, and the exception is
+     * unhandled.
+     *
+     * That is not a corner case. It is `OutputDebugStringA`, which raises
+     * DBG_PRINTEXCEPTION_C and catches it itself: the first debug line the game
+     * printed killed the process with exit code 0x40010006, after 1,171 guest
+     * calls, with no fault and nothing in the log. It is also every `__try` in
+     * the game, in the CRT, and in Direct3D.
+     *
+     * ponytail: widened to span both stacks rather than swapped at each
+     * boundary crossing. The host's own C frames are live on the real thread
+     * stack the whole time the guest runs, so both have to validate, and the
+     * range between them is unmapped - which costs nothing, because this test
+     * is a range check and not a walk. Swap per crossing if something ever
+     * needs the bounds to be exact.
+     */
+    {
+        uint32_t base = __readfsdword(0x04);      /* NT_TIB.StackBase  (high) */
+        uint32_t limit = __readfsdword(0x08);     /* NT_TIB.StackLimit (low)  */
+        uint32_t glo = stack_lo, ghi = stack_lo + STACK_SZ;
+        if (glo < limit) __writefsdword(0x08, glo);
+        if (ghi > base)  __writefsdword(0x04, ghi);
+    }
+#endif
+
     /* The other direction across the boundary: a real library function calling
      * back into guest code. hybrid mints a real address per guest function and
      * runs each nested call on a private arena rather than the host stack -
