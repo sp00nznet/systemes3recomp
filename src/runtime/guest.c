@@ -58,6 +58,39 @@ static uint32_t rd16le(const unsigned char *p)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
 }
 
+#ifdef _WIN32
+/* Tell this thread's TEB about a stack region, or nothing that uses SEH works
+ * on it.
+ *
+ * Windows validates an exception handler by checking that its frame lies
+ * between NT_TIB.StackLimit and StackBase. Lifted code never runs on the
+ * thread stack the TEB describes: the main thread runs on the guest stack this
+ * file allocates, and a worker thread runs on hybrid's per-thread arena. A
+ * handler registered from either is rejected, RtlDispatchException finds
+ * nobody, and the exception is unhandled.
+ *
+ * That is not a corner case. It is `OutputDebugStringA`, which raises
+ * DBG_PRINTEXCEPTION_C and catches it itself: the first debug line the game
+ * printed ended the process with exit code 0x40010006, after 1,171 guest
+ * calls, with no fault and nothing in the log. It is also every `__try` in the
+ * game, in the CRT, and in Direct3D.
+ *
+ * ponytail: widened to span everything rather than swapped at each boundary
+ * crossing. The host's own C frames are live on the real thread stack the
+ * whole time the guest runs, so both have to validate, and the unmapped gap
+ * between them costs nothing because this is a range check and not a walk.
+ * Swap per crossing if something ever needs the bounds to be exact.
+ *
+ * Per thread, because a TEB is. Every thread that runs lifted code has to do
+ * this once, which for a worker thread is its first crossing.
+ */
+void es3_teb_cover(uint32_t lo, uint32_t hi)
+{
+    if (lo < __readfsdword(0x08)) __writefsdword(0x08, lo);   /* StackLimit */
+    if (hi > __readfsdword(0x04)) __writefsdword(0x04, hi);   /* StackBase  */
+}
+#endif
+
 static void *reserve(uint32_t addr, uint32_t size)
 {
 #ifdef _WIN32
@@ -255,6 +288,9 @@ int guest_load(const char *exe_path)
     g_stack_pointer &= ~0xFu;
 
 #ifdef _WIN32
+    es3_teb_cover(stack_lo, stack_lo + STACK_SZ);
+#endif
+#if 0
     /* Tell the TEB about the guest stack, or nothing that uses SEH works.
      *
      * Windows validates an exception handler by checking that its frame lies
@@ -277,13 +313,6 @@ int guest_load(const char *exe_path)
      * is a range check and not a walk. Swap per crossing if something ever
      * needs the bounds to be exact.
      */
-    {
-        uint32_t base = __readfsdword(0x04);      /* NT_TIB.StackBase  (high) */
-        uint32_t limit = __readfsdword(0x08);     /* NT_TIB.StackLimit (low)  */
-        uint32_t glo = stack_lo, ghi = stack_lo + STACK_SZ;
-        if (glo < limit) __writefsdword(0x08, glo);
-        if (ghi > base)  __writefsdword(0x04, ghi);
-    }
 #endif
 
     /* The other direction across the boundary: a real library function calling
@@ -291,7 +320,13 @@ int guest_load(const char *exe_path)
      * runs each nested call on a private arena rather than the host stack -
      * the host's own C frames keep descending while lifted code runs, and the
      * two would interleave. See src/runtime/hle_callback.c for who needs it. */
-    if (!hybrid_init(es3_hybrid_invoke, 0, 0)) {
+    /* A megabyte per crossing, out of sixty-four. The defaults are 32 KB and
+     * 8 MB, and 32 KB is not a stack: a worker thread that enters lifted code
+     * through a callback runs the game's own call graph on that frame, and
+     * real library code called back out of it runs there too. Mario Kart's
+     * eight engine threads ran off the end of theirs and the process died on a
+     * guard page nobody could grow. */
+    if (!hybrid_init(es3_hybrid_invoke, 1u << 20, 64u << 20)) {
         fprintf(stderr, "cannot set up the real -> lifted boundary\n");
         return -1;
     }

@@ -57,28 +57,34 @@
 uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
 {
     CPU c;
-    /* Threads were a warning here until the game produced six of them during
-     * engine startup, all calling back. hybrid keeps its emulated-frame arena
-     * and its marshalling slots in thread-local storage now, so a crossing on
-     * any thread is safe; this just counts them, because "how many threads are
-     * in lifted code" is the first question when something races. */
+    uint32_t esp0 = r->esp;
+    uint32_t cleaned;
+
 #ifdef _WIN32
+    /* This thread is about to run lifted code on hybrid's arena, which its TEB
+     * has never heard of - so any `__try` the guest sets up would be rejected
+     * as out of stack range. Two reads and usually no writes, so it costs less
+     * than tracking which threads have already been covered.
+     *
+     * Mario Kart's engine startup makes eight threads and every one of them
+     * crosses, which is also worth saying out loud once each: "how many
+     * threads are in lifted code" is the first question when something races,
+     * and the lifted->real direction is still single-threaded (hybrid RULE 4). */
+    es3_teb_cover(r->esp - (1u << 20), r->esp + 0x1000u);
     {
-        static volatile LONG seen[8];
-        DWORD self = GetCurrentThreadId();
+        static volatile LONG seen[16];
+        LONG self = (LONG)GetCurrentThreadId();
         int i;
-        for (i = 0; i < 8; i++) {
-            if ((DWORD)seen[i] == self) break;
-            if (!seen[i] && InterlockedCompareExchange(&seen[i], (LONG)self, 0) == 0) {
-                fprintf(stderr, "[hybrid] thread %lu is now calling back into "
+        for (i = 0; i < 16; i++) {
+            if (seen[i] == self) break;
+            if (!seen[i] && InterlockedCompareExchange(&seen[i], self, 0) == 0) {
+                fprintf(stderr, "[hybrid] thread %ld is now calling back into "
                                 "lifted code (%d so far)\n", self, i + 1);
                 break;
             }
         }
     }
 #endif
-    uint32_t esp0 = r->esp;
-    uint32_t cleaned;
 
     (void)real_args;
     memset(&c, 0, sizeof c);

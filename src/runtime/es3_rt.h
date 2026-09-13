@@ -59,6 +59,13 @@ uint32_t guest_image_base(void);
 /* SizeOfImage, so a pointer can be tested for being guest code at all. */
 uint32_t guest_image_size(void);
 
+/* Widen THIS thread's TEB stack bounds to include [lo, hi). Windows validates
+ * an exception handler against those bounds, and lifted code never runs on the
+ * stack the TEB describes - so without this no __try in the game, the CRT or
+ * Direct3D can catch anything. Every thread that runs lifted code needs it
+ * once; for a worker thread that is its first crossing. */
+void es3_teb_cover(uint32_t lo, uint32_t hi);
+
 /* ---- the import boundary ----
  *
  * A PE reaches its libraries through the IAT: `call dword ptr [__imp_X]` reads
