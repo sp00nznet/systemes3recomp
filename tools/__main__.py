@@ -60,6 +60,14 @@ def _note(dll):
 
 
 def cmd_scan(a):
+    # Half an hour of progress, and redirected to a file it is block-buffered:
+    # nothing appears until the run ends, and if it dies the buffer dies with
+    # it and the log is zero bytes. pcrecomp's own CLI does this for the same
+    # reason; going through the library rather than that CLI skipped it.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, OSError):
+        pass
     from .recomp.driver import scan
     info, funcs, iat = scan(a.exe, a.catalog)
     code = info.code_end - info.code_start
