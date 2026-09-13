@@ -166,6 +166,18 @@ def load_catalog(path, code_end=None, read_va=None, code_start=None):
     # cutting it at the next start cannot shorten its host.
     pcrecomp.disasm().clamp_extents(
         funcs, code_end, starts=[a for a in funcs if a not in aliases])
+
+    # Last, because clamping is what creates the problem it solves: a function
+    # cut at a shared epilogue has branch targets in its second half that now
+    # point outside its extent, and the lifter turns each of those into a
+    # dispatch that nothing answers.
+    if read_va is not None:
+        added = pcrecomp.disasm().close_dispatch_targets(
+            read_va, funcs, code_start if code_start is not None else 0,
+            code_end, aliases=aliases)
+        if added:
+            print("[*] %d branch targets had no dispatchable body" % added,
+                  file=sys.stderr)
     after = sum(funcs.values())
     if after < before:
         print("[*] clamped %d bytes of overlapping function bodies to %d"

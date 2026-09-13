@@ -57,24 +57,24 @@
 uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
 {
     CPU c;
-    /* ponytail: single-threaded. hybrid keeps its emulated-frame arena and its
-     * register marshalling slots in file-scope statics, so two threads calling
-     * back into lifted code at once would interleave and corrupt each other -
-     * silently, and a long way from the cause. A game that only ever comes
-     * back on one thread is fine, and this one has not done otherwise yet.
-     * Say so the moment it does; the fix is thread-local storage in
-     * pcrecomp/runtime/hybrid, not a workaround here. */
+    /* Threads were a warning here until the game produced six of them during
+     * engine startup, all calling back. hybrid keeps its emulated-frame arena
+     * and its marshalling slots in thread-local storage now, so a crossing on
+     * any thread is safe; this just counts them, because "how many threads are
+     * in lifted code" is the first question when something races. */
 #ifdef _WIN32
-    static DWORD owner;
-    DWORD self = GetCurrentThreadId();
-    if (!owner) owner = self;
-    else if (owner != self) {
-        fprintf(stderr,
-            "[hybrid] a second thread (%lu, first was %lu) is calling back into\n"
-            "         lifted code. The arena is not thread-safe - see the note\n"
-            "         in hle_callback.c. Results past here are not trustworthy.\n",
-            self, owner);
-        owner = self;
+    {
+        static volatile LONG seen[8];
+        DWORD self = GetCurrentThreadId();
+        int i;
+        for (i = 0; i < 8; i++) {
+            if ((DWORD)seen[i] == self) break;
+            if (!seen[i] && InterlockedCompareExchange(&seen[i], (LONG)self, 0) == 0) {
+                fprintf(stderr, "[hybrid] thread %lu is now calling back into "
+                                "lifted code (%d so far)\n", self, i + 1);
+                break;
+            }
+        }
     }
 #endif
     uint32_t esp0 = r->esp;
