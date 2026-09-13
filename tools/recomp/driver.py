@@ -169,9 +169,22 @@ def recompile(exe_path, catalog_path, outdir, addrs=None, split=400,
         iat = pe.build_iat_map(info)
 
     lift.IMAGE_BASE = info.image_base           # read by Lifter.__init__
-    lifter = lift.Lifter(exe_path, _size_of_image(exe_path),
-                         _reader(exe_path, info.image_base))
+    read_va = _reader(exe_path, info.image_base)
+    lifter = lift.Lifter(exe_path, _size_of_image(exe_path), read_va)
     lifter.reloc_vas = _reloc_vas(exe_path, info.image_base)
+
+    # An entry that is not an instruction boundary decodes as a stream the
+    # program never runs, and lifts and compiles perfectly well - which is how
+    # `hlt` ended up in the middle of a C++ initialiser and killed a boot a
+    # thousand calls in. The scan refuses these now, but doing it here as well
+    # means a catalog made before it does not need the half hour again, and it
+    # is idempotent on one made after.
+    dis = pcrecomp.disasm()
+    gone = dis.drop_mid_instruction_entries(read_va, funcs,
+                                            info.code_start, info.code_end)
+    if gone:
+        print("[*] %d catalog entries were inside an instruction, not at one"
+              % gone, file=sys.stderr)
 
     targets = sorted(addrs) if addrs else sorted(funcs)
     os.makedirs(outdir, exist_ok=True)
