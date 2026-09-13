@@ -1,0 +1,192 @@
+/*
+ * es3_rt.h - runtime for statically recompiled Namco System ES3 games.
+ *
+ * The CPU model is pcrecomp's (pcrecomp/runtime/recomp32_cpu/cpu.h): an
+ * explicit `CPU *c` threaded through every lifted function, flat memory where
+ * a register holds a real 32-bit host address. The host must therefore be a
+ * 32-bit build - an ES3 image is mapped at the virtual addresses it was linked
+ * for, and those start at 0x00400000.
+ *
+ * What this header adds is the board. An ES3 game is a Win32 PE and most of
+ * what it asks for is Windows, which the host already is; the interesting part
+ * is the rest of the cabinet - the JVS I/O the wheel and coins arrive on, the
+ * card reader, the camera that photographs the player, and the network
+ * authentication that will never answer again.
+ */
+#ifndef ES3_RT_H
+#define ES3_RT_H
+
+/* Generated code calls abort() wherever an instruction did not lift, so the
+ * declaration has to travel with the header the generated code includes. */
+#include <stdlib.h>
+
+#include "cpu.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ---- guest process ---- */
+
+/* Map a PE's sections at their linked virtual addresses, point every IAT slot
+ * at its HLE sentinel, and set up the guest stack. Returns 0, or -1 with the
+ * reason on stderr. */
+int  guest_load(const char *exe_path);
+
+/* Entry point VA from the PE header, valid after guest_load. */
+uint32_t guest_entry(void);
+
+/* Initialise a CPU to enter the guest: esp at the top of the guest stack with
+ * a sentinel return address below it, everything else zero. */
+void guest_init_cpu(CPU *c);
+
+/* Where the guest's image was actually mapped. Equal to the PE's ImageBase on
+ * every ES3 title we have - none of them set IMAGE_DLLCHARACTERISTICS_
+ * DYNAMIC_BASE, so they are all linked to load at 0x00400000 and nothing
+ * relocates. cpu.h's GVA() reads g_image_delta, which stays 0 in that case. */
+uint32_t guest_image_base(void);
+
+/* ---- the import boundary ----
+ *
+ * A PE reaches its libraries through the IAT: `call dword ptr [__imp_X]` reads
+ * a function pointer out of a data slot and calls it. There is no loader here
+ * to fill those slots with real addresses, so guest_load() writes a sentinel
+ * into each one - HLE_ADDR(id) - and dispatch() routes that range to
+ * hle_call().
+ *
+ * The boundary is drawn here rather than in the lifter because this catches
+ * every way an import can be reached, not just a direct `call [__imp_X]`: the
+ * `jmp [__imp_X]` thunks MSVC emits, a pointer copied out of the IAT and
+ * called much later (the CRT does this), and the COM-style vtables D3D and the
+ * OKAO libraries hand back. A lifter-side pattern match sees the first and
+ * misses the rest. tools/recomp/driver.py has the long version.
+ *
+ * The range has to be outside the image and outside the heap, so that a
+ * sentinel arriving at dispatch() can only have come out of an IAT slot.
+ * tools/recomp/driver.py holds the same constant and the selftest checks
+ * they agree - if they ever drift, every import call becomes an unresolved
+ * dispatch at a plausible-looking address.
+ */
+#define HLE_BASE        0xE5300000u
+#define HLE_STRIDE      4u
+#define HLE_ADDR(id)    (HLE_BASE + HLE_STRIDE * (uint32_t)(id))
+#define HLE_IS_ADDR(va) ((va) >= HLE_BASE && \
+                         (va) < HLE_BASE + HLE_STRIDE * (uint32_t)HLE_COUNT)
+#define HLE_ID_OF(va)   ((HleId)(((va) - HLE_BASE) / HLE_STRIDE))
+
+/* Every import in the game gets an HLE_* id. recomp_imports.h is generated
+ * from the PE and lists them with the DLL they came from and the number of
+ * argument bytes the real function pops - see "the guest side of a call". */
+#include "recomp_imports.h"
+
+#define HLE_ENUM(id, name, dll, purge) id,
+typedef enum { HLE_IMPORTS(HLE_ENUM) HLE_COUNT } HleId;
+#undef HLE_ENUM
+
+/* A library function's body. Reads its arguments off the guest stack and
+ * leaves the return value in eax. It does not have to touch esp: hle_call()
+ * sets the frame from the generated purge table afterwards, so every handler
+ * is written the same way whether the real function was stdcall, cdecl or
+ * __thiscall. An import whose purge could not be derived is callable only by a
+ * handler that unwinds for itself - which the native forwarder does, because
+ * the real callee's own `ret N` did it. */
+typedef void (*HleHandler)(CPU *c, HleId id);
+
+/* One slot per import. A game project fills in the ones it needs; the toolkit
+ * ships the ones every ES3 title shares. A slot left null aborts naming
+ * itself, which is the to-do list. */
+extern HleHandler g_hle_handlers[];
+
+void hle_call(CPU *c, HleId id);
+
+/* Give a named import a body. Binding by name and not by HLE_* id is what
+ * keeps a handler file title-agnostic: HLE_CreateFileW only exists as an
+ * enumerator if *this* game imports CreateFileW, so a file that said
+ * `g_hle_handlers[HLE_CreateFileW]` would fail to compile against a game that
+ * does not. Returns 0 when the game does not import that name, which is not an
+ * error - most titles do not import most of them. */
+int hle_bind(const char *name, HleHandler fn);
+
+/* Bind every handler the toolkit ships. A game project calls this once, then
+ * binds its own on top. */
+void hle_register_all(void);
+void hle_register_native(void);    /* forward to the real DLL, where one exists */
+void hle_register_board(void);     /* JVS, card reader, camera, authentication */
+
+/* Forward one import to the real function in the host's own copy of the DLL.
+ * Returns 0 if the DLL or the export is not there - a cabinet-only DLL, or a
+ * redistributable this machine does not have. */
+int hle_bind_native(HleId id);
+
+/* Name and originating DLL for an id, for diagnostics. */
+const char *hle_name(HleId id);
+const char *hle_dll(HleId id);
+
+/* Argument bytes the real callee pops, or -1 if it could not be derived. */
+int hle_purge(HleId id);
+
+/* What a cabinet-only DLL actually is, or NULL if it is stock Windows. Turns
+ * "eOkaoDt.dll ordinal_302 is not implemented" into something worth reading. */
+const char *hle_board_note(const char *dll);
+
+/* ---- the guest side of a call ----
+ *
+ * The lifter translates `call` into `push32(c, return_address); dispatch(...)`,
+ * so on entry to a handler esp points at the return address and argument 0 is
+ * the slot above it.
+ *
+ * Unwinding is hle_call()'s job, not the handler's, and it comes from the
+ * generated purge table: Win32 is stdcall and the callee pops its arguments,
+ * the MSVCR100 imports are cdecl and pop nothing, and a C++ member is
+ * __thiscall and pops its stack arguments with `this` in ecx. Getting one of
+ * those wrong desynchronises the guest stack and the symptom appears nowhere
+ * near the cause - so the counts are derived rather than typed, by pcrecomp's
+ * tools/pe/stdcall_argc.py, and an import whose count could not be derived
+ * aborts instead of guessing.
+ *
+ * The exception, and the reason hle_call() assigns esp rather than adding to
+ * it: a handler that forwards to the real function does not need the table at
+ * all, because the real callee's own `ret N` already unwound the frame.
+ */
+#define A32(n)   rd32(c->esp + 4u + 4u * (unsigned)(n))
+#define APTR(n)  ((void *)(uintptr_t)A32(n))
+#define ASTR(n)  ((char *)(uintptr_t)A32(n))
+#define AWSTR(n) ((wchar_t *)(uintptr_t)A32(n))
+#define AI32(n)  ((int32_t)A32(n))
+#define AF32(n)  hle_bits_to_float(A32(n))
+#define RET(v)   (c->eax = (uint32_t)(uintptr_t)(v))
+#define RET64(v) (c->eax = (uint32_t)((uint64_t)(v)), \
+                  c->edx = (uint32_t)((uint64_t)(v) >> 32))
+
+/* `this` for a __thiscall member: MSVC passes it in ecx, not on the stack. */
+#define ATHIS    ((void *)(uintptr_t)c->ecx)
+
+/* A float argument arrives as four bytes on the stack like any other slot.
+ * A function and not a cast through a pointer: the cast is a strict-aliasing
+ * violation that MSVC tolerates and other compilers optimise away. */
+static inline float hle_bits_to_float(uint32_t bits)
+{
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+/* A function returning float or double returns it in st(0) on 32-bit Windows,
+ * not in an XMM register - the caller does `fstp` to take it. */
+#define RETF(v)  fpush(c, (double)(v))
+
+/* ---- lifted code ---- */
+
+/* Address -> lifted function, and the import sentinels on the way past.
+ * Generated: recomp_funcs_list.h is the X-macro of every VA that lifted. */
+void dispatch(CPU *c, uint32_t va);
+void dispatch_jmp(CPU *c, uint32_t va);
+
+/* Is `va` a function this build lifted? For a host that wants to check before
+ * handing the guest a callback address. */
+int dispatch_has(uint32_t va);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* ES3_RT_H */

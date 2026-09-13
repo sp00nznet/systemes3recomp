@@ -1,0 +1,42 @@
+build/
+build-*/
+.vs/
+.vscode/
+*.obj
+*.lib
+*.a
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.suo
+*.user
+CMakeSettings.json
+out/
+__pycache__/
+*.pyc
+
+# Generated per title, never committed.
+gen/
+recomp_funcs_*.c
+recomp_funcs_list.h
+recomp_imports.h
+recomp_iat.h
+*catalog*.json
+
+# ...except the self-check's stand-ins for them, which are hand-written and are
+# the only reason the runtime builds without a game.
+!tests/selftest/recomp_funcs_list.h
+!tests/selftest/recomp_imports.h
+!tests/selftest/recomp_iat.h
+
+# Game data of any kind. Bring your own; none of it belongs here.
+*.iso
+*.img
+*.dat
+*.bin
+
+# Agent scratch - never committed.
+CLAUDE.md
+.claude/
+AGENTS.md
