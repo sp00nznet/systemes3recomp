@@ -143,12 +143,12 @@ def load_catalog(path, code_end=None):
     if code_end is None:
         code_end = max((a + s for a, s in funcs.items()), default=0)
     before = sum(funcs.values())
-    # clamp_extents keys off entry_kind, which a plain {addr: size} map cannot
-    # carry - so the aliases are held out and put back unclamped, because an
-    # alias overlaps its host function on purpose.
-    held = {a: funcs.pop(a) for a in aliases if a in funcs}
-    pcrecomp.disasm().clamp_extents(funcs, code_end)
-    funcs.update(held)
+    # Only function starts may act as a limit: clamping against an alias would
+    # truncate the function it sits inside. The aliases are still clamped
+    # themselves - an over-extended one is as wasteful as any other, and
+    # cutting it at the next start cannot shorten its host.
+    pcrecomp.disasm().clamp_extents(
+        funcs, code_end, starts=[a for a in funcs if a not in aliases])
     after = sum(funcs.values())
     if after < before:
         print("[*] clamped %d bytes of overlapping function bodies to %d"
