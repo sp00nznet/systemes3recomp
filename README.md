@@ -249,10 +249,22 @@ The window is real, framed, 1280x720, and black. Everything up to drawing works:
 * The game loads its data, prints its own `*INF*` and `*ERR*` lines, and runs
   its frame loop.
 
-And with `ES3_TRACE_D3D` the device's vtable is recorded and all hundred and
-twenty of its slots watched, and **not one is ever called**. No `Present`, no
-`Clear`, no `BeginScene`. The renderer is up and nothing asks it for anything,
-which is a useful negative: what is left is not a graphics problem.
+It then asks DXUT for a Direct3D device and is told there is none, which on
+this machine is correct: measured in-process, `Direct3DCreate9` reports **0
+adapters**, `Direct3DCreate9Ex` returns **`D3DERR_NOTAVAILABLE`**, and DXGI
+enumerates **6 adapters with 0 outputs** between them. That is a remote
+session, not a port that does not work, and `es3_report_display()` now says so
+in one line before the guest starts rather than letting the game hang in a
+modal box nobody is going to click.
+
+Getting that far took two x87 fixes in the lifter, both upstream in pcrecomp.
+`fxch` was lifted as a swap of `st(0)` with itself - capstone reports
+`fxch st(1)` with *both* registers, `st(0)` first - and the popping arithmetic
+(`faddp st(1)` is `st(1) += st(0)`) wrote its result into the slot the next
+`fpop` discards. The first one turned the game's fixed-timestep accumulator
+into an infinite loop: it subtracted the step from the wrong register, the step
+came out negative, and the thread carrying the whole call graph never finished
+a frame. 24,268 `fxch` and ~80,000 popping sites in one image.
 
 What is left is speed, and it is not a detail.
 
