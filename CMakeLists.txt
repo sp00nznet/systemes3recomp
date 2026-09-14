@@ -53,6 +53,7 @@ function(es3_runtime target generated_dir)
         "${ES3_RUNTIME_DIR}/hle_callback.c"
         "${ES3_RUNTIME_DIR}/hle_board.c"
         "${ES3_RUNTIME_DIR}/crash.c"
+        "${ES3_RUNTIME_DIR}/debug.c"
         "${ES3_HYBRID_DIR}/hybrid.c"
     )
     target_include_directories(${target} PRIVATE
@@ -92,8 +93,21 @@ function(es3_runtime target generated_dir)
     # the linker and the host kept landing on 0x00400000. LINK_FLAGS lands in
     # AdditionalOptions verbatim. Check it took, do not assume:
     #   dumpbin /headers mygame.exe | findstr "image base"
+    #
+    # /LARGEADDRESSAWARE for the same reason, and it is not cosmetic. An ES3
+    # title was built for a 2 GB address space and uses most of it: Mario Kart
+    # reserves seven hundred megabytes in sixteen-megabyte chunks and commits
+    # four hundred more. A recompiled one adds this runtime's own image, the
+    # guest image mapped as private pages, a guest stack and a callback arena
+    # per thread - two hundred megabytes the original never paid - and the game
+    # then runs out, which arrives as `operator new` throwing std::bad_alloc,
+    # nothing catching it, and the process ending with 0xE06D7363 and an empty
+    # log. On 64-bit Windows this flag gives a 32-bit process 4 GB and the
+    # whole question goes away. The guest's own code is not large-address
+    # aware, so if a title ever misbehaves above 2 GB this is the flag to
+    # suspect first.
     set_property(TARGET ${target} APPEND_STRING PROPERTY
-                 LINK_FLAGS " /BASE:0x20000000")
+                 LINK_FLAGS " /BASE:0x20000000 /LARGEADDRESSAWARE")
 endfunction()
 
 # Self-check: builds the runtime against stub generated headers and exercises

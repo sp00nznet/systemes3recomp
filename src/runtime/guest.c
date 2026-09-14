@@ -411,14 +411,19 @@ int guest_load(const char *exe_path)
      * eight engine threads ran off the end of theirs and the process died on a
      * guard page nobody could grow.
      *
-     * Sixteen and not sixty-four because the arena is per thread and reserved
-     * whole: this game has seventeen threads crossing the boundary, and at
-     * 64 MB each they ran the 32-bit address space out. The thread that lost
-     * the race got no arena, returned 0 from the window procedure, and
-     * CreateWindowExW reported ERROR_NOT_ENOUGH_MEMORY - which is true, and
-     * about the wrong thing. Sixteen megabytes is sixteen nested crossings,
-     * and only nesting needs the depth. */
-    if (!hybrid_init(es3_hybrid_invoke, 1u << 20, 16u << 20)) {
+     * Four megabytes a frame, sixteen of arena - four nested crossings.
+     *
+     * A frame is a whole emulated thread stack, not a call frame: the callback
+     * runs the game's own call graph on it, and one megabyte was not enough.
+     * It ran off the bottom into the arena's uncommitted pages, and because
+     * the REAL esp is in there too while a forwarded import runs, the kernel
+     * then could not dispatch the fault - the process ended with 0xC0000005
+     * and no handler of any kind, which took a self-debugger to see at all.
+     *
+     * Both numbers are reservations, committed a frame at a time, and hybrid
+     * hands an arena back when its thread exits - so the cost is address
+     * space, which /LARGEADDRESSAWARE made affordable. */
+    if (!hybrid_init(es3_hybrid_invoke, 4u << 20, 16u << 20)) {
         fprintf(stderr, "cannot set up the real -> lifted boundary\n");
         return -1;
     }

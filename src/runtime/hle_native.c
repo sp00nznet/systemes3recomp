@@ -172,6 +172,37 @@ static int takes_hinstance(const char *dll)
            _strnicmp(dll, "d3d",    3) == 0;
 }
 
+/* An argument that is really a filename.
+ *
+ * `[call] fopen_s(0683C8E4, 008D9EC8, 00888BC8, 0)` says nothing; the same
+ * line with "Data/System/Model/cube.bin" in it says everything, and the whole
+ * question of why a load failed usually turns on which path was asked for.
+ *
+ * Deliberately conservative: readable memory, printable ASCII, terminated
+ * inside 120 bytes, and at least four characters - so an integer that happens
+ * to be a valid pointer does not come back as a two-letter word. Anything it
+ * declines still prints as hex. */
+static const char *as_string(uint32_t va)
+{
+    static char buf[128];
+    const char *p = (const char *)(uintptr_t)va;
+    unsigned i;
+    MEMORY_BASIC_INFORMATION mi;
+
+    if (va < 0x10000u) return NULL;
+    if (!VirtualQuery((LPCVOID)(uintptr_t)va, &mi, sizeof mi) ||
+        mi.State != MEM_COMMIT || (mi.Protect & PAGE_NOACCESS)) return NULL;
+    for (i = 0; i < sizeof buf - 1; i++) {
+        char ch = p[i];
+        if (ch == 0) break;
+        if ((unsigned char)ch < 0x20 || (unsigned char)ch > 0x7E) return NULL;
+        buf[i] = ch;
+    }
+    if (i < 4 || i == sizeof buf - 1) return NULL;
+    buf[i] = 0;
+    return buf;
+}
+
 /* Said once per import, not once per call. */
 static unsigned char g_hinst_said[HLE_COUNT];
 static int g_watch_set;
@@ -281,8 +312,12 @@ void hle_call_native(CPU *c, HleId id)
         int na = purge > 0 ? purge / 4 : 4;
         int k;
         fprintf(stderr, "[call] %s(", hle_name(id));
-        for (k = 0; k < na && k < 12; k++)
-            fprintf(stderr, "%s%08X", k ? ", " : "", A32(k));
+        for (k = 0; k < na && k < 12; k++) {
+            uint32_t v = A32(k);
+            const char *s = as_string(v);
+            if (s) fprintf(stderr, "%s\"%s\"", k ? ", " : "", s);
+            else   fprintf(stderr, "%s%08X", k ? ", " : "", v);
+        }
         fprintf(stderr, ")");
     }
 

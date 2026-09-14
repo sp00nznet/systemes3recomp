@@ -70,6 +70,10 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
      * crosses, which is also worth saying out loud once each: "how many
      * threads are in lifted code" is the first question when something races,
      * and the lifted->real direction is still single-threaded (hybrid RULE 4). */
+    /* StackBase is the top; the bottom is DeallocationStack at TEB+0xE0C, not
+     * StackLimit - StackLimit is only as low as the stack has actually grown
+     * so far, so it reads 8 KB on a thread with a megabyte reserved. */
+    uint32_t teb_base = __readfsdword(0x04), teb_limit = __readfsdword(0xE0C);
     es3_teb_cover(r->esp - (1u << 20), r->esp + 0x1000u);
     {
         /* Sixty-four, because this game has more than sixteen and the ones
@@ -82,8 +86,17 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
         for (i = 0; i < 64; i++) {
             if (seen[i] == self) break;
             if (!seen[i] && InterlockedCompareExchange(&seen[i], self, 0) == 0) {
+                /* And how much real stack it has. Lifted code carries the
+                 * whole call graph on it - one C frame per guest function plus
+                 * dispatch in between - and a thread this runtime did not
+                 * create has whatever its owner chose. D3DX10 makes its own
+                 * pump threads; if one of those is small, the overflow arrives
+                 * as an access violation the kernel cannot dispatch, which
+                 * means no handler, no report, and a log that stops. */
                 fprintf(stderr, "[hybrid] thread %ld enters lifted code at "
-                                "%08X (%d so far)\n", self, ova, i + 1);
+                                "%08X (%d so far, %u KB of real stack)\n",
+                        self, ova, i + 1,
+                        (unsigned)((teb_base - teb_limit) >> 10));
                 break;
             }
         }
@@ -276,7 +289,41 @@ static void hle_set_window_long(CPU *c, HleId id)
 /* A thread entry point is a callback like any other - and the first sign that
  * this runtime is about to be asked for something it cannot do. See the note
  * on threads below. */
-static void hle_create_thread(CPU *c, HleId id) { wrap_callback_arg(c, id, 2); }
+/*
+ * A thread the guest makes needs a bigger stack than the guest asked for.
+ *
+ * `CreateThread(attr, stack, start, ...)` and `_beginthreadex(sec, stack,
+ * start, ...)` both name the size in argument 1, and a game picks it to fit
+ * its own compiled frames. Lifted code does not have those frames: every guest
+ * function is a C function with its own locals, dispatch() sits between each
+ * pair, and the emulated frame is somewhere else entirely - so the real stack
+ * carries the whole call graph and several times the depth per level.
+ *
+ * When it runs out, the thread faults on the guard page while already handling
+ * a fault, and Windows ends the process THERE - no vectored handler, no
+ * unhandled filter, no report of any kind, exit code 0xC0000005 and a log that
+ * stops mid-line. It cost an afternoon to recognise, so the floor is generous:
+ * address space is cheap for a reservation, and a stack is reserved, not
+ * committed.
+ */
+#define THREAD_STACK_FLOOR (8u << 20)
+
+static void hle_create_thread(CPU *c, HleId id)
+{
+    uint32_t want = A32(1);
+    if (want && want < THREAD_STACK_FLOOR) {
+        static unsigned char said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[hle] the guest asks for %u KB thread stacks; "
+                            "giving them %u MB, because lifted code carries the "
+                            "whole call graph on the real one\n",
+                    want >> 10, THREAD_STACK_FLOOR >> 20);
+        }
+        wr32(c->esp + 4 + 4, THREAD_STACK_FLOOR);
+    }
+    wrap_callback_arg(c, id, 2);
+}
 
 /* SetWindowsHookEx(idHook, lpfn, hmod, threadId) - the callback is argument 1.
  * EnumWindows(lpEnumFunc, lParam) - argument 0. */
@@ -308,6 +355,41 @@ static void hle_debug_string(CPU *c, HleId id)
             fprintf(stderr, "[game] %ls\n", (const wchar_t *)(uintptr_t)p);
         else
             fprintf(stderr, "[game] %s\n", (const char *)(uintptr_t)p);
+    }
+    hle_call_native(c, id);
+}
+
+/*
+ * What the game threw.
+ *
+ * `_CxxThrowException(object, throwinfo)` carries the static type of the thing
+ * being thrown, and on x86 every pointer in that chain is absolute, so the
+ * name is three dereferences away. It is worth printing because an uncaught
+ * C++ exception ends the process with 0xE06D7363 and nothing else - and
+ * because the name usually says whether the game is reporting a problem it
+ * found or hitting one this runtime made.
+ *
+ * The object comes first in case it is a std::exception: its vtable slot 0 is
+ * `what()`, which needs a call, but the first pointer-sized field of most
+ * game exception classes is a message anyway.
+ */
+static void hle_cxx_throw(CPU *c, HleId id)
+{
+    static volatile LONG shown;
+    if (InterlockedIncrement(&shown) <= 4) {
+        uint32_t ti = A32(1);
+        const char *name = NULL;
+        if (ti) {
+            uint32_t cta = rd32(ti + 12);                 /* CatchableTypeArray */
+            if (cta && rd32(cta) > 0) {
+                uint32_t ct = rd32(cta + 4);              /* first CatchableType */
+                uint32_t td = ct ? rd32(ct + 4) : 0;      /* TypeDescriptor */
+                if (td) name = (const char *)(uintptr_t)(td + 8);
+            }
+        }
+        fprintf(stderr, "\n[throw] the guest threw %s (object %08X)\n",
+                name ? name : "something with no type descriptor", A32(0));
+        es3_report_state("where it threw");
     }
     hle_call_native(c, id);
 }
@@ -368,6 +450,22 @@ void hle_register_callbacks(void)
     exits += (unsigned)hle_bind("_amsg_exit", hle_give_up);
     exits += (unsigned)hle_bind("_invoke_watson", hle_give_up);
     exits += (unsigned)hle_bind("TerminateProcess", hle_give_up);
+    /* The C++ ones. A game that throws and is not caught reaches
+     * `terminate()`, which ends the process through `__fastfail` - no
+     * exception, no handler, no message, exit code 0xC0000409 and an empty
+     * log. It looks exactly like a hang that stopped. */
+    exits += (unsigned)hle_bind("?terminate@@YAXXZ", hle_give_up);
+    exits += (unsigned)hle_bind("_purecall", hle_give_up);
+    exits += (unsigned)hle_bind("_wassert", hle_give_up);
+    exits += (unsigned)hle_bind("_invalid_parameter_noinfo", hle_give_up);
+    /* Not an abort, but the other way a run ends without saying anything: the
+     * game decides to stop. PostQuitMessage ends the message loop and
+     * ExitThread ends a thread without unwinding - and when the last one goes,
+     * so does the process, with whatever code it passed. A clean exit code 0
+     * and an empty log is what that looks like from outside. */
+    hle_bind("_CxxThrowException", hle_cxx_throw);
+    exits += (unsigned)hle_bind("ExitThread", hle_give_up);
+    exits += (unsigned)hle_bind("PostQuitMessage", hle_give_up);
     exits += (unsigned)hle_bind("UnhandledExceptionFilter", hle_give_up);
 
     fprintf(stderr,

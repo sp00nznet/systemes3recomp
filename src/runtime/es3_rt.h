@@ -261,6 +261,17 @@ uint32_t dispatch_owner(const void *host);
 int es3_watched(uint32_t va);
 unsigned es3_dispatch_count(void);
 
+/* What the address space is being spent on - printed when a C++ throw goes
+ * uncaught, because on 32 bits the likeliest thrower is `operator new`. */
+void es3_report_memory(void);
+
+/* ES3_DEBUG=1: relaunch as our own debuggee and report every exception the
+ * child takes, including the ones no handler inside it can see - a thread that
+ * faults on a stack the kernel cannot dispatch on ends the process with no
+ * notification at all. Returns 0 in the child; never returns in the parent.
+ * See src/runtime/debug.c. */
+int es3_debug_self(void);
+
 /* ---- bring-up diagnostics (src/runtime/crash.c) ----
  *
  * A fault in lifted code shows a debugger `L_004A0550` in a two-million-line

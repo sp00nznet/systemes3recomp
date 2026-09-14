@@ -163,6 +163,49 @@ static const char *region_of(uint32_t va)
     return "";
 }
 
+/*
+ * Where the address space went.
+ *
+ * A 32-bit process has 2 GB, and a recompiled game spends some of it before
+ * the game gets any: the guest image at its linked address, the guest stack,
+ * hybrid's per-thread callback arena, and this runtime's own thirty-megabyte
+ * image. When `operator new` throws std::bad_alloc with a 125 MB working set,
+ * the question is not what is allocated but what is RESERVED, and by whom.
+ */
+void es3_report_memory(void)
+{
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION mi;
+    uint64_t reserved = 0, committed = 0, freeb = 0, biggest_free = 0;
+    uint32_t a = 0x10000;
+    unsigned regions = 0;
+
+    fprintf(stderr, "  address space, largest reservations first:\n");
+    /* Two passes would need a list; one pass and a threshold is enough to name
+     * anything big enough to matter. */
+    while (a < 0x7FFF0000u) {
+        if (!VirtualQuery((LPCVOID)(uintptr_t)a, &mi, sizeof mi)) break;
+        if (mi.State == MEM_RESERVE) reserved += mi.RegionSize;
+        else if (mi.State == MEM_COMMIT) committed += mi.RegionSize;
+        else { freeb += mi.RegionSize;
+               if (mi.RegionSize > biggest_free) biggest_free = mi.RegionSize; }
+        if (mi.State != MEM_FREE && mi.RegionSize >= (4u << 20))
+            fprintf(stderr, "    %08X  %6u MB  %s %s\n",
+                    (uint32_t)(uintptr_t)mi.BaseAddress,
+                    (unsigned)(mi.RegionSize >> 20),
+                    mi.State == MEM_RESERVE ? "reserved " : "committed",
+                    mi.Type == MEM_IMAGE ? "image" :
+                    mi.Type == MEM_MAPPED ? "mapped" : "private");
+        a = (uint32_t)(uintptr_t)mi.BaseAddress + (uint32_t)mi.RegionSize;
+        if (++regions > 20000) break;
+    }
+    fprintf(stderr, "  %u MB committed, %u MB reserved, %u MB free "
+                    "(largest free run %u MB)\n",
+            (unsigned)(committed >> 20), (unsigned)(reserved >> 20),
+            (unsigned)(freeb >> 20), (unsigned)(biggest_free >> 20));
+#endif
+}
+
 void es3_report_state(const char *why)
 {
     unsigned total = RING_COUNT;
@@ -215,9 +258,90 @@ void es3_unlifted(uint32_t va, const char *text)
 
 #ifdef _WIN32
 
+/*
+ * One thunk per guest address, minted once.
+ *
+ * The first version of this ran the lifted function from inside the handler,
+ * with the CPU's esp pointing at the faulting thread's REAL stack. That is the
+ * mistake hybrid's arena exists to prevent: the lifted code's pushes and the
+ * host's own C frames then descend on the same stack and interleave. It worked
+ * for a shallow callback and corrupted a deep one, and the corruption arrived
+ * as an access violation the kernel could not even dispatch - no vectored
+ * handler, no filter, a log that stops mid-line.
+ *
+ * Redirecting EIP to a thunk hands the whole problem to the code that already
+ * solves it: the caller's own `call` is still in flight, its return address is
+ * still where it put it, and r2l_common does the marshalling it does for every
+ * other callback. Nothing here touches a register.
+ *
+ * Cached because the fault recurs on every call - the caller's pointer still
+ * says the guest address - and minting a thunk each time would drain the pool
+ * in a second.
+ */
+#define THUNK_CACHE 512
+static struct { uint32_t va, thunk; } g_thunks[THUNK_CACHE];
+static CRITICAL_SECTION g_thunk_lock;
+static int g_thunk_lock_ready;
+
+static uint32_t thunk_for(uint32_t va)
+{
+    unsigned i = (va * 2654435761u) % THUNK_CACHE, n;
+    uint32_t t;
+    for (n = 0; n < THUNK_CACHE; n++) {
+        unsigned k = (i + n) % THUNK_CACHE;
+        if (g_thunks[k].va == va) return g_thunks[k].thunk;
+        if (!g_thunks[k].va) break;
+    }
+    if (!g_thunk_lock_ready) return 0;
+    EnterCriticalSection(&g_thunk_lock);
+    /* Again under the lock: another thread may have minted it meanwhile. */
+    for (n = 0; n < THUNK_CACHE; n++) {
+        unsigned k = (i + n) % THUNK_CACHE;
+        if (g_thunks[k].va == va) { t = g_thunks[k].thunk; goto out; }
+        if (!g_thunks[k].va) {
+            t = es3_callback(va);
+            g_thunks[k].thunk = t;
+            g_thunks[k].va = va;          /* last, so a reader never sees half */
+            goto out;
+        }
+    }
+    t = 0;
+out:
+    LeaveCriticalSection(&g_thunk_lock);
+    return t;
+}
+
+/* The address, written with no CRT at all.
+ *
+ * A fault report that goes through fprintf can be lost: the process died
+ * part-way through one, leaving a blank line and nothing else, twice in a row.
+ * stdio locks, and a lock is exactly what a thread in a bad state cannot take.
+ * Sixteen bytes and one WriteFile cannot be lost that way. */
+static void raw_fault(const EXCEPTION_RECORD *r, const void *at)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char b[64], *p = b;
+    const char *t = "\n!! fault ";
+    unsigned long v;
+    int i;
+    DWORD n;
+    while (*t) *p++ = *t++;
+    v = r->ExceptionCode;
+    for (i = 28; i >= 0; i -= 4) *p++ = hex[(v >> i) & 15];
+    *p++ = ' '; *p++ = 'a'; *p++ = 't'; *p++ = ' ';
+    v = (unsigned long)(uintptr_t)at;
+    for (i = 28; i >= 0; i -= 4) *p++ = hex[(v >> i) & 15];
+    *p++ = '\n';
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), b, (DWORD)(p - b), &n, NULL);
+}
+
 static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
 {
     const EXCEPTION_RECORD *r = ep->ExceptionRecord;
+
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        !(r->NumberParameters >= 2 && r->ExceptionInformation[0] == 8))
+        raw_fault(r, r->ExceptionAddress);
     if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
         r->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION &&
         r->ExceptionCode != EXCEPTION_PRIV_INSTRUCTION) {
@@ -258,6 +382,11 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
                 fprintf(stderr, "[seh] guest raised %08lX at %p (first time; "
                                 "declining - it is the guest's to catch)\n",
                         (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+                /* A C++ throw is usually caught and unremarkable. This one is
+                 * not: it ends the process with 0xE06D7363 and no message, and
+                 * on a 2 GB address space the likeliest thrower by far is
+                 * `operator new`. Say where the address space went. */
+                if (r->ExceptionCode == 0xE06D7363u) es3_report_memory();
                 fflush(stderr);
                 break;
             }
@@ -290,26 +419,16 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
         uint32_t va = (uint32_t)r->ExceptionInformation[1];
         uint32_t base = guest_image_base();
         if (va >= base && va < base + guest_image_size() && dispatch_has(va)) {
-            CONTEXT *x = ep->ContextRecord;
-            uint32_t ret = *(uint32_t *)(uintptr_t)x->Esp;
-            CPU cpu;
-            memset(&cpu, 0, sizeof cpu);
-            cpu.eax = x->Eax; cpu.ecx = x->Ecx; cpu.edx = x->Edx; cpu.ebx = x->Ebx;
-            cpu.esp = x->Esp; cpu.ebp = x->Ebp; cpu.esi = x->Esi; cpu.edi = x->Edi;
-            cpu.fpu_top = 0;
-
-            g_r2l_faults++;
-            if (g_r2l_faults <= 8)
-                fprintf(stderr, "[r2l] real code called guest %08X directly "
-                                "(unthunked callback %u) - dispatching it\n",
-                        va, g_r2l_faults);
-
-            dispatch(&cpu, va);
-
-            x->Eax = cpu.eax; x->Ecx = cpu.ecx; x->Edx = cpu.edx; x->Ebx = cpu.ebx;
-            x->Esp = cpu.esp; x->Ebp = cpu.ebp; x->Esi = cpu.esi; x->Edi = cpu.edi;
-            x->Eip = ret;
-            return EXCEPTION_CONTINUE_EXECUTION;
+            uint32_t thunk = thunk_for(va);
+            if (thunk) {
+                g_r2l_faults++;
+                if (g_r2l_faults <= 8)
+                    fprintf(stderr, "[r2l] real code called guest %08X directly "
+                                    "(unthunked callback %u) - sending it "
+                                    "through a thunk\n", va, g_r2l_faults);
+                ep->ContextRecord->Eip = thunk;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
         }
     }
 
@@ -366,6 +485,8 @@ void es3_install_crash_handler(void)
     static int done;
     if (done) return;
     done = 1;
+    InitializeCriticalSection(&g_thunk_lock);
+    g_thunk_lock_ready = 1;
     open_trail();
     AddVectoredExceptionHandler(1, es3_veh);
 }

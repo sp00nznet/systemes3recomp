@@ -185,7 +185,7 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 | Instruction coverage | **99.966%.** 886 emitted lines out of 2.6 million are unlifted, and the game has now executed none of them: the ones it used to reach - `lock xadd`, `lock cmpxchg`, `cvtdq2ps` - went upstream this round. What is left is overwhelmingly data the recovery pass mistook for code. |
 | Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Boots, opens a window, brings up both renderers.** The full lifted image creates its `mkart3` window, gets a working window procedure through it, brings up Direct3D 9Ex and Direct3D 10, loads its shader effects with D3DX10, opens DirectInput 8, and runs a real frame loop with D3DX10's thread pump feeding it through lifted callbacks. The window is still black and the process ends after about twenty-five seconds - see below. |
+| Runtime | **Boots, opens a window, brings up both renderers, loads its data.** The full lifted image creates its `mkart3` window, gets a working window procedure through it, brings up Direct3D 9Ex and Direct3D 10, loads its shader effects with D3DX10, opens DirectInput 8, and runs a real frame loop - five million guest calls, twenty-nine threads, the game's own `*INF*` and `*ERR*` lines in the log, and D3DX10's thread pump calling the game's own `ID3DX10DataLoader` methods as lifted code. The window is still black, and a thread D3DX10 created runs out of real stack - see below. |
 | Imports, from the game tree | **495 of 495.** Run from a real tree and every import resolves against a real DLL, the cabinet ones included: the OKAO Vision camera and `JVSEmuMK.dll` ship with the game, so `hle_native.c` forwards to the actual board libraries. |
 | The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
 
@@ -239,27 +239,59 @@ nobody has found yet.
 
 ### Where it stops now
 
-The window is real, visible, and the right size, and it is black. `Present` is
-never reached: the game creates both devices and loads its effects, but the
-frame it is drawing does not arrive on screen, and the process ends after about
-twenty-five seconds with no fault and nothing in the log - which is the
-signature of a forwarded CRT calling `__fastfail`, or of `ExitProcess` from a
-thread that decided the boot had failed.
+The window is real, visible and the right size, and it is black. The game gets
+through its whole data load - five million guest calls, its own `*INF*` and
+`*ERR*` lines in the log, D3DX10's thread pump calling the game's own
+`ID3DX10DataLoader` methods as lifted code - and then a thread that D3DX10
+created runs out of real stack and the process ends with 0xC0000005.
 
-The next thing to find out is which, and the instruments are already in the
-runtime:
+That last one is worth stating precisely, because it is the shape of the next
+piece of work. `hybrid` puts the *emulated* frame on a private per-thread
+arena, and deliberately leaves the host's own C frames on the real stack. But
+lifted code carries the whole guest call graph on that real stack - one C
+function per guest function, `dispatch()` between each pair - so a callback
+needs far more of it than the original code did. For a thread this runtime
+created that is fine, because it chose the size. For a thread D3DX10 created it
+is not, and the overflow arrives as a fault the kernel cannot dispatch: no
+vectored handler, no unhandled filter, no report of any kind.
+
+**The fix is for r2l_common to switch the real stack too**, onto a region the
+arena already knows how to reserve, rather than only the emulated one.
+
+### Seeing a death that has no handler
+
+`ES3_DEBUG=1` relaunches the process as its own debuggee and reports every
+exception the child takes - code, address, thread, first or second chance, the
+module it happened in, and whether the memory it touched was committed,
+reserved or free. That is the only way to see a fault the kernel could not
+dispatch, and it is how the stack overflow above was found at all.
+
+It works because parent and child are the same image at the same base
+(`/BASE:0x20000000`, `/DYNAMICBASE:NO`), so `dispatch_owner()` in the parent
+turns the child's host address straight back into a guest function.
+
+```
+[debug] first chance C0000005 access violation at 037B7A52 on thread 62332
+        in private memory at 03720000; target region 00000000 FREE (writing 7F81FDC0)
+[debug] SECOND chance C0000005 access violation at 776F911C on thread 62332
+        in ntdll.dll; target region 00000000 FREE (reading 7F81FDA4)
+```
+
+The second line is ntdll failing to *read* the stack it was trying to push an
+exception frame onto. That is what an unreportable death looks like from
+outside.
+
+### What is in the runtime for the next round
 
 | | |
 |---|---|
+| `ES3_DEBUG=1` | run as our own debuggee; every exception, named, with its module |
 | `ES3_TRACE_IMPORTS=1` | the first call to each import, in order |
-| `ES3_TRACE_CALLS=Name,Name` | every call to those, with arguments, result and last error |
+| `ES3_TRACE_CALLS=Name,Name` | every call to those, with arguments - strings shown as strings - result and last error |
 | `ES3_WATCH_VA=6ab300,4042c0` | when those guest functions are entered, from where, on which thread, and what they returned |
-| `es3_trail.bin` | every dispatch of the whole boot - a million entries, `py -3.11 -m tools trail` |
-| `ES3_WINTEST=1` | can this process make a plain Win32 window at all |
-| `ES3_NO_HINSTANCE_FIX=1`, `ES3_GUEST_EXECUTABLE=1`, `ES3_NO_TEB_COVER=1`, `ES3_NO_WNDPROC_THUNK=1` | turn each of the above off and watch the symptom come back |
-
-`[game]` lines are the game's own `OutputDebugString` - the only account of the
-boot written by someone who knew what it was supposed to do.
+| `es3_trail.bin` | every dispatch of the whole boot, a million entries, `py -3.11 -m tools trail` |
+| `[game]` lines | the game's own `OutputDebugString`, which on the cabinet went to a kernel debugger nobody was watching |
+| `ES3_NO_HINSTANCE_FIX`, `ES3_GUEST_EXECUTABLE`, `ES3_NO_TEB_COVER`, `ES3_NO_WNDPROC_THUNK` | turn each fix off and watch its symptom come back |
 
 ### How it got this far
 
