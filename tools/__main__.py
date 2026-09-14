@@ -102,9 +102,17 @@ def cmd_trail(a):
     from .recomp.driver import HLE_BASE, HLE_STRIDE
 
     words = struct.unpack("<%dI" % (len(raw) // 4), raw[:len(raw) // 4 * 4])
-    total, ring = words[0], words[2:]
-    n = len(ring)
+    total, stride, body = words[0], (words[1] or 1), words[2:]
+    n = len(body) // stride
     print("%d dispatches, last %d kept" % (total, min(total, n)))
+
+    if stride == 2 and not a.thread:
+        seen = {}
+        for i in range(max(0, total - n), total):
+            seen[body[stride * (i % n)]] = seen.get(body[stride * (i % n)], 0) + 1
+        print("threads in the window: " +
+              ", ".join("t%u(%d)" % (t, c)
+                        for t, c in sorted(seen.items(), key=lambda kv: -kv[1])))
 
     # An import sentinel encodes an index into the sorted (DLL, name) list,
     # which is the order emit_headers() numbers them in. Rebuild it from the
@@ -116,13 +124,16 @@ def cmd_trail(a):
         imports = sorted(set(pe.build_iat_map(pe.analyze_pe(a.exe)).values()))
 
     for i in range(max(0, total - n), total):
-        va = ring[i % n]
+        tid = body[stride * (i % n)] if stride == 2 else 0
+        va = body[stride * (i % n) + (stride - 1)]
+        if a.thread and tid != a.thread:
+            continue
         who = ""
         if HLE_BASE <= va < HLE_BASE + HLE_STRIDE * max(len(imports), 1):
             k = (va - HLE_BASE) // HLE_STRIDE
             who = ("import %s (%s)" % (imports[k][1], imports[k][0])
                    if k < len(imports) else "import #%d" % k)
-        print("  %6d  %08X  %s" % (i, va, who))
+        print("  %6d  t%-6u %08X  %s" % (i, tid, va, who))
 
 
 def main(argv=None):
@@ -149,6 +160,8 @@ def main(argv=None):
     t = sub.add_parser("trail", help="read the dispatch ring from the last run")
     t.add_argument("trail", nargs="?", default="es3_trail.bin")
     t.add_argument("exe", nargs="?", help="name the imports from the game exe")
+    t.add_argument("--thread", type=int, default=0,
+                   help="show only this thread - a worker pool buries everything else")
     t.set_defaults(fn=cmd_trail)
 
     a = p.parse_args(argv)

@@ -36,18 +36,34 @@
  * per guest call, which does not show up next to the work a call does. If it
  * ever does, make it a build option rather than deleting it - the trail is
  * most of the value here. */
-#define TRAIL 1024
-static uint32_t  g_fallback[TRAIL + 2];
-static uint32_t *g_ring = g_fallback;     /* [0]=count, [1]=depth, [2..]=entries */
+/* Pairs, not addresses: a thread id with every entry.
+ *
+ * One ring shared by every thread is almost useless once a game has a worker
+ * pool - sixteen threads spinning on SignalObjectAndWait fill a thousand
+ * entries in a millisecond and bury the one thread anybody wants to see. With
+ * the id alongside, `tools trail` can show one thread at a time.
+ *
+ * The id comes from fs:[0x24] (TEB ClientId.UniqueThread) rather than
+ * GetCurrentThreadId(), which is a call; this is one load. */
+#define TRAIL 4096
+static uint32_t  g_fallback[2 * TRAIL + 2];
+static uint32_t *g_ring = g_fallback;     /* [0]=count, [1]=stride, then pairs */
 static const CPU *g_cpu;
 
 #define RING_COUNT  g_ring[0]
-#define RING_AT(i)  g_ring[2 + ((i) & (TRAIL - 1))]
+#define RING_TID(i) g_ring[2 + 2 * ((i) & (TRAIL - 1))]
+#define RING_VA(i)  g_ring[3 + 2 * ((i) & (TRAIL - 1))]
 
 void es3_note_dispatch(uint32_t va)
 {
-    RING_AT(RING_COUNT) = va;
-    RING_COUNT++;
+    unsigned i = RING_COUNT;
+#ifdef _WIN32
+    RING_TID(i) = __readfsdword(0x24);
+#else
+    RING_TID(i) = 0;
+#endif
+    RING_VA(i) = va;
+    RING_COUNT = i + 1;
 }
 
 /*
@@ -74,14 +90,15 @@ static void open_trail(void)
     void *v;
     if (f == INVALID_HANDLE_VALUE) return;
     m = CreateFileMappingA(f, NULL, PAGE_READWRITE, 0,
-                           (TRAIL + 2) * sizeof(uint32_t), NULL);
+                           (2 * TRAIL + 2) * sizeof(uint32_t), NULL);
     CloseHandle(f);
     if (!m) return;
     v = MapViewOfFile(m, FILE_MAP_WRITE, 0, 0, 0);
     CloseHandle(m);
     if (!v) return;
-    memset(v, 0, (TRAIL + 2) * sizeof(uint32_t));
+    memset(v, 0, (2 * TRAIL + 2) * sizeof(uint32_t));
     g_ring = (uint32_t *)v;
+    g_ring[1] = 2;                 /* words per entry, for the reader */
 #endif
 }
 
@@ -114,12 +131,12 @@ void es3_report_state(const char *why)
     }
     fprintf(stderr, "  last %u dispatches (oldest first):\n", show);
     for (i = total - show; i < total; i++) {
-        uint32_t va = RING_AT(i);
+        uint32_t va = RING_VA(i);
         if (HLE_IS_ADDR(va))
-            fprintf(stderr, "    %08X  import %s (%s)\n", va,
+            fprintf(stderr, "    t%-6u %08X  import %s (%s)\n", RING_TID(i), va,
                     hle_name(HLE_ID_OF(va)), hle_dll(HLE_ID_OF(va)));
         else
-            fprintf(stderr, "    %08X  %s\n", va, region_of(va));
+            fprintf(stderr, "    t%-6u %08X  %s\n", RING_TID(i), va, region_of(va));
     }
     fprintf(stderr, "  the whole trail is in es3_trail.bin - "
                     "py -3.11 -m tools trail\n");
