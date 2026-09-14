@@ -253,6 +253,43 @@ static int dxgi_outputs(int *adapters)
     return (int)outs;
 }
 
+/*
+ * The address of IDXGIAdapter::EnumOutputs, so it can be recognised later.
+ *
+ * The game reaches DXGI entirely through GetProcAddress and vtable slots, so
+ * when it calls a method there is no name to match on - only an address. But
+ * it is the same dxgi.dll in the same process, so the vtable of an adapter
+ * WE create holds the same addresses the game will call. Read slot 7 once and
+ * keep it; hle_call_address() compares against it.
+ *
+ * Same trick as es3_d3d_note_factory() uses for Direct3D 9's CreateDeviceEx,
+ * and it is the only way to name a COM method in a recompiled process.
+ */
+uint32_t es3_dxgi_enum_outputs_addr(void)
+{
+    static uint32_t addr;
+    static int done;
+    HMODULE m;
+    long(__stdcall * create)(const GUID *, void **);
+    GUID iid = { 0x7b7166ec, 0x21c7, 0x44ae,
+                 { 0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69 } };
+    void *f = NULL, *a = NULL;
+
+    if (done) return addr;
+    done = 1;
+    m = LoadLibraryA("dxgi.dll");
+    if (!m) return 0;
+    create = (long(__stdcall *)(const GUID *, void **))
+             GetProcAddress(m, "CreateDXGIFactory");
+    if (!create || create(&iid, &f) < 0) return 0;
+    if ((*(long(__stdcall ***)(void *, unsigned, void **))f)[7](f, 0, &a) >= 0) {
+        addr = (uint32_t)(uintptr_t)(*(void ***)a)[7];   /* EnumOutputs */
+        (*(unsigned long(__stdcall ***)(void *))a)[2](a);
+    }
+    (*(unsigned long(__stdcall ***)(void *))f)[2](f);
+    return addr;
+}
+
 void es3_report_display(void)
 {
     int d9 = d3d9_adapters(), adapters = 0, outs = dxgi_outputs(&adapters);

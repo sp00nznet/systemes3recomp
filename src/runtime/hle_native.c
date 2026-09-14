@@ -397,6 +397,26 @@ void hle_call_address(CPU *c, uint32_t target)
 
     hybrid_call_machine(&r, target);
 
+    /*
+     * IDXGIAdapter::EnumOutputs came back empty. Hand it a display.
+     *
+     * A DXUT title builds its list of usable device settings from the display
+     * modes an adapter's outputs report, so an adapter with none contributes
+     * nothing and DXUT ends with "Could not find any compatible Direct3D
+     * devices" in a modal box. That is what a session with no attached display
+     * looks like - and windowed Direct3D works in one perfectly well, so the
+     * enumeration is the only thing that failed. See dxgi_output.c.
+     *
+     * Only for output 0, and only when the real call actually found nothing:
+     * on a machine with a monitor this never fires.
+     */
+    if (target && target == es3_dxgi_enum_outputs_addr() &&
+        (uint32_t)r.eax == 0x887A0002u /* DXGI_ERROR_NOT_FOUND */ &&
+        A32(1) == 0) {
+        uint32_t pp = A32(2), fake = es3_fake_output();
+        if (pp && fake) { wr32(pp, fake); r.eax = 0; }
+    }
+
     /* The one COM result worth a line: whether the renderer exists. Everything
      * the game draws depends on it, and a device that failed leaves a window
      * that is simply black - which looks exactly like a game that has not got

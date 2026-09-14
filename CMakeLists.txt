@@ -53,6 +53,7 @@ function(es3_runtime target generated_dir)
         "${ES3_RUNTIME_DIR}/hle_callback.c"
         "${ES3_RUNTIME_DIR}/hle_board.c"
         "${ES3_RUNTIME_DIR}/crash.c"
+        "${ES3_RUNTIME_DIR}/dxgi_output.c"
         "${ES3_RUNTIME_DIR}/debug.c"
         "${ES3_HYBRID_DIR}/hybrid.c"
     )

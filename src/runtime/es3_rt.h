@@ -73,6 +73,8 @@ void es3_window_selftest(void);
 void es3_start_screen_watchdog(void);
 void es3_enter_guest(CPU *c);
 void es3_report_display(void);
+uint32_t es3_dxgi_enum_outputs_addr(void);
+uint32_t es3_fake_output(void);
 
 /* ---- the import boundary ----
  *
