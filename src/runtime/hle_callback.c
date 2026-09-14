@@ -689,6 +689,35 @@ static void hle_load_library(CPU *c, HleId id)
     if (c->eax) es3_guest_diff(kept);
 }
 
+/*
+ * Not the host's network settings.
+ *
+ * A cabinet owns its machine, so the game renews its DHCP lease on the way up
+ * and logs "IP Renewed." That is fine on a cabinet and is not fine here: this
+ * is somebody's workstation, the lease being renewed is theirs, and if they
+ * happen to be connected over Remote Desktop the renewal can take the
+ * connection with it. It is the same class of problem as the game maximising
+ * itself over the display - correct behaviour for the hardware it was written
+ * for, damage on the hardware it is standing on.
+ *
+ * NO_ERROR without doing anything. The machine already has an address; the
+ * game only wants to know it succeeded. ES3_ALLOW_DHCP if you really mean it.
+ */
+static void hle_ip_renew(CPU *c, HleId id)
+{
+    static int allow = -1, said;
+    if (allow < 0) allow = getenv("ES3_ALLOW_DHCP") != NULL;
+    if (allow) { hle_call_native(c, id); return; }
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[hle] the game wants to renew this machine's DHCP "
+                        "lease; telling it that worked without touching the "
+                        "network (ES3_ALLOW_DHCP to allow it).\n");
+    }
+    c->eax = 0;                       /* NO_ERROR */
+    c->esp += 4 + 4 * 1;              /* __stdcall, one argument */
+}
+
 static void hle_hook_proc(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
 static void hle_enum_windows(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 
@@ -828,6 +857,7 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("SetWindowsHookExA", hle_hook_proc);
     ptrs += (unsigned)hle_bind("EnumWindows", hle_enum_windows);
     hle_bind("GetSystemMetrics", hle_get_system_metrics);
+    hle_bind("IpRenewAddress", hle_ip_renew);
     hle_bind("LoadLibraryW", hle_load_library);
     hle_bind("LoadLibraryA", hle_load_library);
     hle_bind("CreateFileW", hle_create_file);
