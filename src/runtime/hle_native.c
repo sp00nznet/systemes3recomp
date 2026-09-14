@@ -152,6 +152,30 @@ static void native_thunk(CPU *c, HleId id) { hle_call_native(c, id); }
 static unsigned char g_first[HLE_COUNT];
 static int g_trace = -1;
 
+/* ES3_TRACE_CALLS=Name,Name,... - every call to those, with its arguments and
+ * its result. The first-call list says how far the game got; this says what
+ * happened when it got there, which is the next question and usually the last
+ * one. A window that comes back 0x0 with a 0x0 rectangle is not a mystery once
+ * you can see the arguments that made it. */
+static unsigned char g_watch[HLE_COUNT];
+static int g_watch_set;
+
+static void watch_init(void)
+{
+    const char *list = getenv("ES3_TRACE_CALLS");
+    unsigned i;
+    g_watch_set = 1;
+    if (!list) return;
+    for (i = 0; i < HLE_COUNT; i++) {
+        const char *n = hle_name((HleId)i), *p = strstr(list, n);
+        size_t len = strlen(n);
+        /* A whole comma-separated field, so "Sleep" does not match
+         * "SleepEx" and "memcpy" does not match "wmemcpy". */
+        if (p && (p == list || p[-1] == ',') && (p[len] == 0 || p[len] == ','))
+            g_watch[i] = 1;
+    }
+}
+
 void hle_call_native(CPU *c, HleId id)
 {
     hybrid_regs r;
@@ -180,11 +204,26 @@ void hle_call_native(CPU *c, HleId id)
     r.eax = c->eax; r.ecx = c->ecx; r.edx = c->edx; r.ebx = c->ebx;
     r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;
 
+    if (!g_watch_set) watch_init();
+    if (g_watch[id]) {
+        int purge = hle_purge(id);
+        int na = purge > 0 ? purge / 4 : 4;
+        int k;
+        fprintf(stderr, "[call] %s(", hle_name(id));
+        for (k = 0; k < na && k < 8; k++)
+            fprintf(stderr, "%s%08X", k ? ", " : "", A32(k));
+        fprintf(stderr, ")");
+    }
+
     hybrid_call_machine(&r, (uint32_t)(uintptr_t)g_native[id]);
 
     c->eax = r.eax;
     c->edx = r.edx;
     c->esp = r.esp;          /* the real callee's own unwind - see hle_call */
+
+    if (g_watch[id])
+        fprintf(stderr, " = %08X   (last error %lu)
+", r.eax, GetLastError());
 
     /* A callee that returned a float left the host stack one deeper than it
      * found it. No table says which ones those are; the depth does. */
