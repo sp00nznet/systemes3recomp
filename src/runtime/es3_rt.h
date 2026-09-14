@@ -395,6 +395,8 @@ void es3_report_threads(void);
 void es3_apply_pokes(void);
 /* ES3_PEEK, on the watchdog's own period. */
 void es3_report_peeks(void);
+/* ES3_WATCH_MEM - a debug register on a guest address. */
+void es3_watch_mem_tick(void);
 
 /* An argument that is really a string - ASCII or UTF-16, NULL if it is
  * neither. Shared so a handler in hle_callback.c can print one too. */

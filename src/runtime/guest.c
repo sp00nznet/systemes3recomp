@@ -362,6 +362,7 @@ static DWORD WINAPI peek_watchdog(void *unused)
     for (;;) {
         Sleep(seconds * 1000u);
         es3_report_peeks();
+        es3_watch_mem_tick();
         fflush(stderr);
     }
 }
@@ -369,7 +370,7 @@ static DWORD WINAPI peek_watchdog(void *unused)
 void es3_start_screen_watchdog(void)
 {
     HANDLE t;
-    if (getenv("ES3_PEEK")) {
+    if (getenv("ES3_PEEK") || getenv("ES3_WATCH_MEM")) {
         t = CreateThread(NULL, 0, peek_watchdog, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }

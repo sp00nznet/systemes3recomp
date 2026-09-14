@@ -695,9 +695,15 @@ static void raw_fault(const EXCEPTION_RECORD *r, const void *at)
     WriteFile(GetStdHandle(STD_ERROR_HANDLE), b, (DWORD)(p - b), &n, NULL);
 }
 
+int es3_watch_mem_hit(EXCEPTION_POINTERS *ep);
+
 static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
 {
     const EXCEPTION_RECORD *r = ep->ExceptionRecord;
+
+    /* First, because a debug register fires constantly once armed and the
+     * rest of this handler has nothing to say about it. */
+    if (es3_watch_mem_hit(ep)) return EXCEPTION_CONTINUE_EXECUTION;
 
     if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
         !(r->NumberParameters >= 2 && r->ExceptionInformation[0] == 8))
@@ -899,4 +905,116 @@ void es3_install_crash_handler(void)
 
 #else
 void es3_install_crash_handler(void) { open_trail(); }
+#endif
+
+#ifdef _WIN32
+/*
+ * ES3_WATCH_MEM - a hardware watchpoint on a guest address, named by chain.
+ *
+ * `who writes this` is the question every one of these boot gates comes down
+ * to, and neither of the other two tools answers it: the trail says which
+ * functions ran, ES3_PEEK says what the value became. A debug register says
+ * which instruction, and dispatch_owner() turns the host address back into
+ * the lifted guest function it belongs to.
+ *
+ *   ES3_WATCH_MEM="959b64**+3c"
+ *
+ * The address is resolved the same way ES3_PEEK resolves one, which matters
+ * because the interesting words are all behind two pointers into the heap and
+ * are at a different address every run. It arms once the chain resolves, and
+ * re-arms every few seconds so threads started later are covered too.
+ *
+ * DR0 only, four bytes, break on write. One watch is all this has needed.
+ */
+static uint32_t g_wm_addr;                  /* resolved, or 0 */
+static int g_wm_read;
+static struct { uint32_t addr; unsigned nops;
+                struct { char op; uint32_t arg; } ops[PEEK_OPS]; } g_wm;
+
+static uint32_t wm_resolve(void)
+{
+    uint32_t v = g_wm.addr;
+    unsigned o;
+    for (o = 0; o < g_wm.nops; o++) {
+        if (g_wm.ops[o].op == '+') { v += g_wm.ops[o].arg; continue; }
+        if (!readable(v, 4)) return 0;
+        v = rd32(v);
+    }
+    return readable(v, 4) ? v : 0;
+}
+
+/* DR7: L0 enables DR0; bits 16-17 are the condition (01 = write) and 18-19
+ * the length (11 = four bytes). */
+#define DR7_ARM ((1u << 0) | (1u << 16) | (3u << 18))
+
+static void wm_arm_thread(DWORD tid, uint32_t addr)
+{
+    HANDLE h = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                          THREAD_SUSPEND_RESUME, FALSE, tid);
+    CONTEXT ctx;
+    if (!h) return;
+    if (SuspendThread(h) != (DWORD)-1) {
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (GetThreadContext(h, &ctx) && ctx.Dr0 != addr) {
+            ctx.Dr0 = addr;
+            ctx.Dr7 = (ctx.Dr7 & ~0xFFFFFu) | DR7_ARM;
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            SetThreadContext(h, &ctx);
+        }
+        ResumeThread(h);
+    }
+    CloseHandle(h);
+}
+
+/* Called from the peek thread, which already wakes on a timer. */
+void es3_watch_mem_tick(void)
+{
+    HANDLE snap;
+    THREADENTRY32 te;
+    DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    BOOL ok;
+    uint32_t addr;
+
+    if (!g_wm_read) {
+        const char *e = getenv("ES3_WATCH_MEM");
+        g_wm_read = 1;
+        if (!e || !chain(e, &g_wm.addr, &g_wm.nops, g_wm.ops)) g_wm.nops = 0xFFFF;
+    }
+    if (g_wm.nops == 0xFFFF) return;
+
+    addr = wm_resolve();
+    if (!addr) return;
+    if (addr != g_wm_addr) {
+        g_wm_addr = addr;
+        fprintf(stderr, "[watchmem] watching %08X for writes\n", addr);
+    }
+
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    te.dwSize = sizeof te;
+    for (ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
+        if (te.th32OwnerProcessID == pid && te.th32ThreadID != me)
+            wm_arm_thread(te.th32ThreadID, addr);
+    CloseHandle(snap);
+}
+
+/* From the vectored handler. Returns 1 if this was our watchpoint. */
+int es3_watch_mem_hit(EXCEPTION_POINTERS *ep)
+{
+    uint32_t eip;
+    if (!g_wm_addr) return 0;
+    if (ep->ExceptionRecord->ExceptionCode != (DWORD)EXCEPTION_SINGLE_STEP)
+        return 0;
+    if (!(ep->ContextRecord->Dr6 & 1u)) return 0;
+    eip = (uint32_t)ep->ContextRecord->Eip;
+    fprintf(stderr, "[watchmem] %08X written at host %08X, in lifted %08X "
+                    "(thread %lu); it now reads %08X\n",
+            g_wm_addr, eip, dispatch_owner((const void *)(uintptr_t)eip),
+            GetCurrentThreadId(), rd32(g_wm_addr));
+    fflush(stderr);
+    ep->ContextRecord->Dr6 = 0;
+    return 1;
+}
+#else
+void es3_watch_mem_tick(void) {}
 #endif
