@@ -19,12 +19,12 @@ community hub for sp00nznet's recomp projects.
 
 **Current version: v0.1.0.** The pipeline runs end to end against *Mario Kart
 Arcade GP DX* at **99.99% instruction coverage**. The whole game builds to a
-32.8 MB native executable and **boots**: through the CRT and every C++ static
-initialiser, into `CoInitialize` and `D3DX10CreateThreadPump`, spawning
-fourteen engine worker threads and running its task loop — 13,373 guest calls,
-with 455 of its 495 imports answered by the host's own DLLs. See
-[Status](#status) for the numbers and
-[Where it stops](#where-it-stops-exactly) for the one thing left.
+32.8 MB native executable and **boots and stays up** — 47 million guest calls,
+27 threads, its config read, D3DX10's thread pump started, its window class
+registered — with **all 495 imports** answered by real DLLs, the cabinet's own
+camera and JVS libraries included. One Win32 call stands between that and a
+picture. See [Status](#status) and
+[Where it stops](#where-it-stops-exactly).
 
 ---
 
@@ -185,7 +185,8 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 | Instruction coverage | **99.9928%.** 152 emitted lines are unlifted, down from 50,555 before the x87 compares landed upstream and 560 before the false starts went. |
 | Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Boots, threads, and runs its task loop.** The full lifted image builds to a 32.8 MB executable and gets **13,373 guest calls** in: the CRT, every C++ static initialiser, `CoInitialize`, `D3DX10CreateThreadPump`, fourteen engine worker threads, and then a steady `WaitForSingleObject` / `ReleaseMutex` / `Sleep` loop. It dies there on the one thing left — see below. |
+| Runtime | **Boots and stays up.** The full lifted image runs indefinitely - 47 million guest calls and counting, 27 threads, no crash. It reads its config, starts D3DX10's thread pump, registers a window class with a working window procedure, and calls `CreateWindowExW`. That call fails, and it is the only thing between here and a picture - see below. |
+| Imports, from the game tree | **495 of 495.** Run from a real tree and every import resolves against a real DLL, the cabinet ones included: the OKAO Vision camera and `JVSEmuMK.dll` ship with the game, so `hle_native.c` forwards to the actual board libraries. |
 | The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
 
 ### What is still unlifted, in full
@@ -212,34 +213,42 @@ needs per-lane code, and a plausible-looking wrong lane is worse than an honest
 
 ### Where it stops, exactly
 
-```
-[hybrid] thread 58884 is now calling back into lifted code (1 so far)
-...
-[hybrid] thread 37920 is now calling back into lifted code (14 so far)
+One Win32 call:
 
-=== the guest faulted ===
-  guest image at 0x00400000, 13373 dispatches so far
-    E530019C  import Sleep (KERNEL32.dll)
-    007457F0  inside the guest image
-    00745B30  inside the guest image
-    007841A0  inside the guest image
-    00744E90  inside the guest image
-    E530019C  import Sleep (KERNEL32.dll)          <- and round again
+```
+[wndclass] RegisterClassExW @0405C848:
+    cbSize=00000030 style=00000000 lpfnWndProc=04060640  <- our thunk
+    cbClsExtra=0 cbWndExtra=0 hInstance=00400000
+    hIcon=0 hCursor=00010003 hbrBackground=00900011 lpszClassName=0405C878
+[call] RegisterClassExW(0405C848) = 0000C3AA   (last error 0)
+[call] CreateWindowExW(0, class, title, WS_POPUP|WS_VISIBLE,
+                       CW_USEDEFAULT, CW_USEDEFAULT, 1360, 768,
+                       0, 0, 00400000, 0) = 00000000   (last error 8)
 ```
 
-Two threads faulted at once, which is the diagnosis: **pcrecomp's
-lifted-to-real marshalling is reentrant but not thread-safe** (hybrid's RULE
-4). Its register block is file-scope, so two threads calling a forwarded
-import at the same moment hand each other's registers to each other's target.
-Fourteen threads make that certain rather than unlikely.
+The class registers and returns a valid atom. `CreateWindowExW` returns NULL
+with **ERROR_NOT_ENOUGH_MEMORY**, for both windows the game makes.
 
-`__declspec(thread)` is the obvious fix and does not work — the TLS lookup MSVC
-emits needs eax and ecx, and every reference happens after `mov esp` has
-handed the machine to the guest. Tried, measured (2,015 guest calls down to 3),
-reverted, and written up in the file. What will work is parking the host esp in
-a TEB slot, which needs no registers at all, and using `xchg esp, fs:[0x14]` to
-get the guest's final esp back. That is a rewrite of forty lines of assembly in
-shared code that three other projects use, so it wants its own pass.
+What is known about it:
+
+* The window procedure is a real `hybrid_thunk`, and it matters. With
+  `ES3_NO_WNDPROC_THUNK=1` - which leaves the raw guest address in the class -
+  `CreateWindowExW` never returns at all, because USER32 calls the *unlifted*
+  original. So the window procedure is genuinely being called during creation,
+  and the thunked path at least gets an answer back.
+* The class fields are all sane: real `GetStockObject` and `LoadCursorW`
+  handles, zero extra bytes, a plausible `lpszClassName`.
+* `hInstance` for the first window is `0x00400000`, the *guest* image base,
+  which is not a module the host loader knows. The second uses the host's own
+  `0x20000000` and fails the same way, so that is suspicious rather than
+  damning.
+* The TEB stack widening is necessary (without it the boot dies much earlier,
+  at `OutputDebugStringA`) and the range it produces spans both stacks with
+  unmapped space between them, which USER32 does look at.
+
+The toggles for isolating it are in the runtime already:
+`ES3_TRACE_IMPORTS`, `ES3_TRACE_CALLS=Name,Name`, `ES3_NO_WNDPROC_THUNK`,
+`ES3_NO_TEB_COVER`.
 
 ### How it got this far
 
@@ -303,34 +312,42 @@ this repo to improve.
 
 ### Where it stops, exactly
 
-```
-[hybrid] thread 58884 is now calling back into lifted code (1 so far)
-...
-[hybrid] thread 37920 is now calling back into lifted code (14 so far)
+One Win32 call:
 
-=== the guest faulted ===
-  guest image at 0x00400000, 13373 dispatches so far
-    E530019C  import Sleep (KERNEL32.dll)
-    007457F0  inside the guest image
-    00745B30  inside the guest image
-    007841A0  inside the guest image
-    00744E90  inside the guest image
-    E530019C  import Sleep (KERNEL32.dll)          <- and round again
+```
+[wndclass] RegisterClassExW @0405C848:
+    cbSize=00000030 style=00000000 lpfnWndProc=04060640  <- our thunk
+    cbClsExtra=0 cbWndExtra=0 hInstance=00400000
+    hIcon=0 hCursor=00010003 hbrBackground=00900011 lpszClassName=0405C878
+[call] RegisterClassExW(0405C848) = 0000C3AA   (last error 0)
+[call] CreateWindowExW(0, class, title, WS_POPUP|WS_VISIBLE,
+                       CW_USEDEFAULT, CW_USEDEFAULT, 1360, 768,
+                       0, 0, 00400000, 0) = 00000000   (last error 8)
 ```
 
-Two threads faulted at once, which is the diagnosis: **pcrecomp's
-lifted-to-real marshalling is reentrant but not thread-safe** (hybrid's RULE
-4). Its register block is file-scope, so two threads calling a forwarded
-import at the same moment hand each other's registers to each other's target.
-Fourteen threads make that certain rather than unlikely.
+The class registers and returns a valid atom. `CreateWindowExW` returns NULL
+with **ERROR_NOT_ENOUGH_MEMORY**, for both windows the game makes.
 
-`__declspec(thread)` is the obvious fix and does not work — the TLS lookup MSVC
-emits needs eax and ecx, and every reference happens after `mov esp` has
-handed the machine to the guest. Tried, measured (2,015 guest calls down to 3),
-reverted, and written up in the file. What will work is parking the host esp in
-a TEB slot, which needs no registers at all, and using `xchg esp, fs:[0x14]` to
-get the guest's final esp back. That is a rewrite of forty lines of assembly in
-shared code that three other projects use, so it wants its own pass.
+What is known about it:
+
+* The window procedure is a real `hybrid_thunk`, and it matters. With
+  `ES3_NO_WNDPROC_THUNK=1` - which leaves the raw guest address in the class -
+  `CreateWindowExW` never returns at all, because USER32 calls the *unlifted*
+  original. So the window procedure is genuinely being called during creation,
+  and the thunked path at least gets an answer back.
+* The class fields are all sane: real `GetStockObject` and `LoadCursorW`
+  handles, zero extra bytes, a plausible `lpszClassName`.
+* `hInstance` for the first window is `0x00400000`, the *guest* image base,
+  which is not a module the host loader knows. The second uses the host's own
+  `0x20000000` and fails the same way, so that is suspicious rather than
+  damning.
+* The TEB stack widening is necessary (without it the boot dies much earlier,
+  at `OutputDebugStringA`) and the range it produces spans both stacks with
+  unmapped space between them, which USER32 does look at.
+
+The toggles for isolating it are in the runtime already:
+`ES3_TRACE_IMPORTS`, `ES3_TRACE_CALLS=Name,Name`, `ES3_NO_WNDPROC_THUNK`,
+`ES3_NO_TEB_COVER`.
 
 ### How it got this far
 
