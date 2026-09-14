@@ -150,10 +150,7 @@ static DWORD WINAPI screen_watchdog(void *unused)
          * the game keeps overwriting, and a boot that races it takes a
          * different path on every run. */
         es3_apply_pokes();
-        if (period && ++ticks % period == 0) {
-            es3_report_peeks();
-            es3_report_threads();
-        }
+        if (period && ++ticks % period == 0) es3_report_threads();
         while ((h = FindWindowExA(NULL, h, NULL, NULL)) != NULL) {
             DWORD pid = 0;
             RECT r;
@@ -350,9 +347,32 @@ void es3_report_display(void)
     fflush(stderr);
 }
 
+/* ES3_PEEK gets a thread of its own.
+ *
+ * It shared the watchdog's, and a thread report on this game suspends and
+ * walks ninety-five threads - slow enough that peeks arrived twice in ten
+ * minutes with a twenty-second period set. A peek is wanted while the game is
+ * RUNNING, so it must not queue behind anything that is slow when it is. */
+static DWORD WINAPI peek_watchdog(void *unused)
+{
+    const char *stall = getenv("ES3_STALL");
+    unsigned seconds = stall ? (unsigned)atoi(stall) : 5u;
+    (void)unused;
+    if (!seconds) seconds = 5u;
+    for (;;) {
+        Sleep(seconds * 1000u);
+        es3_report_peeks();
+        fflush(stderr);
+    }
+}
+
 void es3_start_screen_watchdog(void)
 {
     HANDLE t;
+    if (getenv("ES3_PEEK")) {
+        t = CreateThread(NULL, 0, peek_watchdog, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
     if (getenv("ES3_FULLSCREEN")) return;
     t = CreateThread(NULL, 0, screen_watchdog, NULL, 0, NULL);
     if (t) CloseHandle(t);
