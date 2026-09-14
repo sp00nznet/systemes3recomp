@@ -394,6 +394,34 @@ static void hle_cxx_throw(CPU *c, HleId id)
     hle_call_native(c, id);
 }
 
+/*
+ * ES3_NO_THREAD_PUMP: refuse D3DX10 its worker threads.
+ *
+ * The pump is the one place a *library* makes threads that then run lifted
+ * code, through the game's own ID3DX10DataLoader. Those threads have whatever
+ * stack D3DX10 chose, and lifted code needs far more real stack than the
+ * original did - one C frame per guest function with dispatch() between each
+ * pair - so one of them overflows and the process ends with a fault the kernel
+ * cannot dispatch.
+ *
+ * The proper fix is for hybrid to switch the real stack as well as the
+ * emulated one. This is the other end of the same problem: a game that cannot
+ * create a pump loads synchronously instead, on threads this runtime sized.
+ * Off by default, because it changes what the game does rather than how it
+ * runs.
+ */
+static void hle_no_thread_pump(CPU *c, HleId id)
+{
+    static unsigned char said;
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[hle] refusing %s - its worker threads would run "
+                        "lifted code on a stack nobody here chose\n",
+                hle_name(id));
+    }
+    c->eax = 0x80004005u;              /* E_FAIL */
+}
+
 /* ---- the ways a CRT gives up ----
  *
  * Every one of these ends the process, and forwarded to the real DLL they end
@@ -464,6 +492,8 @@ void hle_register_callbacks(void)
      * so does the process, with whatever code it passed. A clean exit code 0
      * and an empty log is what that looks like from outside. */
     hle_bind("_CxxThrowException", hle_cxx_throw);
+    if (getenv("ES3_NO_THREAD_PUMP"))
+        hle_bind("D3DX10CreateThreadPump", hle_no_thread_pump);
     exits += (unsigned)hle_bind("ExitThread", hle_give_up);
     exits += (unsigned)hle_bind("PostQuitMessage", hle_give_up);
     exits += (unsigned)hle_bind("UnhandledExceptionFilter", hle_give_up);

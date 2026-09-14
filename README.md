@@ -242,21 +242,38 @@ nobody has found yet.
 The window is real, visible and the right size, and it is black. The game gets
 through its whole data load - five million guest calls, its own `*INF*` and
 `*ERR*` lines in the log, D3DX10's thread pump calling the game's own
-`ID3DX10DataLoader` methods as lifted code - and then a thread that D3DX10
-created runs out of real stack and the process ends with 0xC0000005.
+`ID3DX10DataLoader` methods as lifted code - and then, after about eight
+seconds, a thread runs off the bottom of its emulated stack.
 
-That last one is worth stating precisely, because it is the shape of the next
-piece of work. `hybrid` puts the *emulated* frame on a private per-thread
-arena, and deliberately leaves the host's own C frames on the real stack. But
-lifted code carries the whole guest call graph on that real stack - one C
-function per guest function, `dispatch()` between each pair - so a callback
-needs far more of it than the original code did. For a thread this runtime
-created that is fine, because it chose the size. For a thread D3DX10 created it
-is not, and the overflow arrives as a fault the kernel cannot dispatch: no
-vectored handler, no unhandled filter, no report of any kind.
+**A C++ exception does not unwind the emulated stack.** That is the finding,
+and it is the next piece of design rather than the next bug.
 
-**The fix is for r2l_common to switch the real stack too**, onto a region the
-arena already knows how to reserve, rather than only the emulated one.
+The thread that dies has thrown and caught about three thousand exceptions in
+a row - `EnterCriticalSection`, `__uncaught_exception`, `LeaveCriticalSection`,
+over and over, once per failed `BlockRead`. Each one unwinds correctly as far
+as Windows is concerned, because the handlers and the `RtlUnwind` that calls
+them run as real code on the real stack. None of it touches `c->esp`, which is
+where the guest's stack pointer actually lives. So every throw leaks the frames
+below it, three thousand of them consume sixteen megabytes, and the next
+forwarded call pushes into memory that was never committed:
+
+```
+[debug] first chance C0000005 at 037B7A52 (writing 7E81FDC0); target FREE
+[hybrid] arena 27 at 7E820000, 16 MB reserved
+```
+
+`7E81FDC0` is `0x240` bytes below the base of that arena. The emulated stack
+went through the whole thing.
+
+Two ways forward, and they are not exclusive:
+
+* **Stop the throws.** They come from `BlockRead` failing on files that exist
+  on disk, so something in the load path is wrong and the exceptions are a
+  symptom. Cheaper, and probably what the next session should do first.
+* **Unwind the emulated stack.** The honest fix: a guest `try` has to record
+  the emulated `esp` alongside its SEH registration, and the catch has to
+  restore it. That is the same class of work as thunking SEH handlers, which
+  this runtime also does not do yet.
 
 ### Seeing a death that has no handler
 

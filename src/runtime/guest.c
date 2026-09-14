@@ -423,7 +423,7 @@ int guest_load(const char *exe_path)
      * Both numbers are reservations, committed a frame at a time, and hybrid
      * hands an arena back when its thread exits - so the cost is address
      * space, which /LARGEADDRESSAWARE made affordable. */
-    if (!hybrid_init(es3_hybrid_invoke, 4u << 20, 16u << 20)) {
+    if (!hybrid_init(es3_hybrid_invoke, 15u << 20, 16u << 20)) {
         fprintf(stderr, "cannot set up the real -> lifted boundary\n");
         return -1;
     }
