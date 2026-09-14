@@ -484,6 +484,11 @@ static void seq_init(void)
         if (!_strnicmp(s, "sys", 3))     { field = 0; s += 3; }
         else if (!_strnicmp(s, "p1", 2)) { field = 1; s += 2; }
         else if (!_strnicmp(s, "p2", 2)) { field = 2; s += 2; }
+        /* `shot` is not a switch. It is here because the only clock that can
+         * say "capture what that press did" is this one: the frame counter
+         * and this timetable drift apart from run to run, so naming a frame
+         * number for it lands somewhere different every time. */
+        else if (!_strnicmp(s, "shot", 4)) { field = 3; s += 4; }
         else break;
         if (*s != '=') break;
         g_seq[g_nseq].when = when;
@@ -506,10 +511,13 @@ static void seq_tick(void)
         switch (g_seq[k].field) {
         case 0: g_sw_sys = g_seq[k].bits; break;
         case 1: g_sw_p1  = g_seq[k].bits; break;
+        case 3: es3_shot_now(); break;
         default: g_sw_p2 = g_seq[k].bits; break;
         }
         fprintf(stderr, "[jvs] %ums: %s = %04X\n", g_seq[k].when,
-                g_seq[k].field == 0 ? "sys" : g_seq[k].field == 1 ? "p1" : "p2",
+                g_seq[k].field == 0 ? "sys" :
+                g_seq[k].field == 1 ? "p1"  :
+                g_seq[k].field == 3 ? "shot" : "p2",
                 g_seq[k].bits);
     }
 }

@@ -45,7 +45,7 @@ static const GUID IID_Dev_ =
     { 0x9B7E4C0F, 0x342C, 0x4106,
       { 0xA1, 0x9F, 0x4F, 0x27, 0x04, 0xF6, 0x89, 0xF0 } };
 
-#define MAX_WANTED 8
+#define MAX_WANTED 32     /* enough to shoot one frame per press of a switch sweep */
 static unsigned g_want[MAX_WANTED];
 static unsigned g_nwant;
 static int g_read;
@@ -111,6 +111,17 @@ static int write_bmp(const char *path, const unsigned char *px, unsigned w,
     return 1;
 }
 
+/* Capture the next frame presented, whenever that is.
+ *
+ * ES3_SHOT names frames by number, which is the right handle when the
+ * question is "what did it look like at frame 3000". It is the wrong one
+ * when the question is "what did that button do", because the presser and
+ * the frame counter run on different clocks and land differently every run.
+ * This is the other handle. */
+static volatile LONG g_shot_now;
+
+void es3_shot_now(void) { InterlockedExchange(&g_shot_now, 1); }
+
 void es3_dxgi_present(uint32_t swapchain)
 {
     IDXGISwapChain *sc = (IDXGISwapChain *)(uintptr_t)swapchain;
@@ -124,8 +135,13 @@ void es3_dxgi_present(uint32_t swapchain)
 
     if (!g_read) shot_init();
     n = ++g_frame;
-    if (!g_nwant || !sc) return;
+    if (!sc) return;
     for (i = 0; i < g_nwant; i++) if (g_want[i] == n) want = 1;
+    /* Asked for by something that knows WHEN it wants one - see
+     * es3_shot_now(). A frame number cannot express "right after I pressed
+     * that", because the frame counter and any other clock in this process
+     * drift apart from one run to the next. */
+    if (InterlockedExchange(&g_shot_now, 0)) want = 1;
     if (!want) return;
 
     if (FAILED(IDXGISwapChain_GetBuffer(sc, 0, &IID_Tex2D_, (void **)&back))) {
