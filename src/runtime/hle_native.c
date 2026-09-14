@@ -274,6 +274,7 @@ static void force_windowed(CPU *c, uint32_t target)
  * one route it cannot undo by resizing a window.
  */
 static uint32_t g_dxgi_lo, g_dxgi_hi;
+static uint32_t g_dxgi_swapchain, g_dxgi_present;
 
 static int in_dxgi(uint32_t target)
 {
@@ -392,6 +393,9 @@ void hle_call_address(CPU *c, uint32_t target)
 
     force_windowed(c, target);
     force_windowed_dxgi(c, target);
+    /* Before the call, not after: a DISCARD swap chain may have nothing left
+     * in its back buffer once Present has returned. */
+    if (target && target == g_dxgi_present) es3_dxgi_present(g_dxgi_swapchain);
     note_device_call(target);
     note_host_call(target);
 
@@ -410,6 +414,22 @@ void hle_call_address(CPU *c, uint32_t target)
      * Only for output 0, and only when the real call actually found nothing:
      * on a machine with a monitor this never fires.
      */
+    /* The game's swap chain, and from its vtable the address of Present.
+     * Slot 8 - the frame the game is about to show is in its back buffer, and
+     * that is the only place a recompiled game's rendering can be seen from. */
+    if (target && target == es3_dxgi_create_swapchain_addr() && r.eax == 0) {
+        uint32_t pp = A32(3);
+        if (pp) {
+            uint32_t sc = rd32(pp);
+            if (sc && !g_dxgi_swapchain) {
+                g_dxgi_swapchain = sc;
+                g_dxgi_present = rd32(rd32(sc) + 4 * 8);
+                fprintf(stderr, "[dxgi] swap chain at %08X, Present at %08X\n",
+                        sc, g_dxgi_present);
+            }
+        }
+    }
+
     if (target && target == es3_dxgi_enum_outputs_addr() &&
         (uint32_t)r.eax == 0x887A0002u /* DXGI_ERROR_NOT_FOUND */ &&
         A32(1) == 0) {

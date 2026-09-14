@@ -265,6 +265,31 @@ static int dxgi_outputs(int *adapters)
  * Same trick as es3_d3d_note_factory() uses for Direct3D 9's CreateDeviceEx,
  * and it is the only way to name a COM method in a recompiled process.
  */
+/* And IDXGIFactory::CreateSwapChain, slot 10, for the same reason: it is how
+ * the game's swap chain first becomes visible to this runtime, and the swap
+ * chain is where both the fullscreen flag and the finished frame live. */
+uint32_t es3_dxgi_create_swapchain_addr(void)
+{
+    static uint32_t addr;
+    static int done;
+    HMODULE m;
+    long(__stdcall * create)(const GUID *, void **);
+    GUID iid = { 0x7b7166ec, 0x21c7, 0x44ae,
+                 { 0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69 } };
+    void *f = NULL;
+
+    if (done) return addr;
+    done = 1;
+    m = LoadLibraryA("dxgi.dll");
+    if (!m) return 0;
+    create = (long(__stdcall *)(const GUID *, void **))
+             GetProcAddress(m, "CreateDXGIFactory");
+    if (!create || create(&iid, &f) < 0) return 0;
+    addr = (uint32_t)(uintptr_t)(*(void ***)f)[10];
+    (*(unsigned long(__stdcall ***)(void *))f)[2](f);
+    return addr;
+}
+
 uint32_t es3_dxgi_enum_outputs_addr(void)
 {
     static uint32_t addr;

@@ -75,6 +75,8 @@ void es3_enter_guest(CPU *c);
 void es3_report_display(void);
 uint32_t es3_dxgi_enum_outputs_addr(void);
 uint32_t es3_fake_output(void);
+uint32_t es3_dxgi_create_swapchain_addr(void);
+void es3_dxgi_present(uint32_t swapchain);
 
 /* ---- the import boundary ----
  *

@@ -492,6 +492,48 @@ static void hle_message_box(CPU *c, HleId id)
     c->esp += 4 + 4 * 4;                         /* __stdcall, four arguments */
 }
 
+/*
+ * ES3_NO_COM: refuse the serial port the JVS I/O board would be on.
+ *
+ * A diagnostic, not a fix. This game opens COM1 at 19200 8N1, issues an
+ * overlapped three-byte read - a JVS packet header - and waits for a reply
+ * from a board that is not plugged into a desktop PC. It keeps presenting
+ * frames while it waits, and every one of them is empty, because its state
+ * machine has not reached anything that draws.
+ *
+ * The question that separates "waiting for the board" from "something else
+ * entirely" is what the game does when the port is not there at all, and this
+ * asks it. If a failed open produces a drawn error screen, the I/O is the only
+ * thing between here and a picture; if the frames stay black either way, it is
+ * not.
+ */
+static void hle_create_file(CPU *c, HleId id)
+{
+    static int off = -1;
+    const char *name;
+
+    if (off < 0) off = getenv("ES3_NO_COM") != NULL;
+    name = off ? es3_arg_string(A32(0)) : NULL;
+    if (name) {
+        const char *p = name;
+        if (p[0] == '\\' && p[1] == '\\' && p[2] == '.' && p[3] == '\\') p += 4;
+        if ((p[0] == 'C' || p[0] == 'c') && (p[1] == 'O' || p[1] == 'o') &&
+            (p[2] == 'M' || p[2] == 'm') && p[3] >= '0' && p[3] <= '9') {
+            static unsigned char said;
+            if (!said) {
+                said = 1;
+                fprintf(stderr, "[hle] ES3_NO_COM: refusing %s, which is where "
+                                "the JVS I/O board would be\n", name);
+            }
+            SetLastError(ERROR_FILE_NOT_FOUND);
+            c->eax = 0xFFFFFFFFu;                 /* INVALID_HANDLE_VALUE */
+            c->esp += 4 + 4 * 7;                  /* __stdcall, seven args */
+            return;
+        }
+    }
+    hle_call_native(c, id);
+}
+
 static void hle_hook_proc(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
 static void hle_enum_windows(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 
@@ -631,6 +673,8 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("SetWindowsHookExA", hle_hook_proc);
     ptrs += (unsigned)hle_bind("EnumWindows", hle_enum_windows);
     hle_bind("GetSystemMetrics", hle_get_system_metrics);
+    hle_bind("CreateFileW", hle_create_file);
+    hle_bind("CreateFileA", hle_create_file);
     hle_bind("MessageBoxW", hle_message_box);
     hle_bind("MessageBoxA", hle_message_box);
     ptrs += (unsigned)hle_bind("CreateThread", hle_create_thread);
