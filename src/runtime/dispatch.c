@@ -120,6 +120,52 @@ uint32_t dispatch_owner(const void *host)
 
 static void dispatch_inner(CPU *c, uint32_t va);
 
+/*
+ * A guest function answered by this runtime instead of by its own code.
+ *
+ * The board is not only DLLs and I/O ports. Some of what a cabinet has is
+ * asked for by a function inside the game: "how many I/O boards are on the USB
+ * bus" is one such, and on a desktop the lifted version of it walks a device
+ * tree, finds nothing, and returns zero - which is a true answer to a question
+ * that has no true answer here.
+ *
+ * dispatch() is the single place every guest call passes through, so it is
+ * also the place to answer one. A handler returns 1 when it has, having set
+ * eax and consumed the return address exactly as the lifted function would.
+ *
+ * Deliberately not a table in this file: which addresses mean what is a fact
+ * about one title, and this runtime serves a platform. The game project binds
+ * them in its own host.c, next to a comment explaining what the function is.
+ */
+#define GUEST_HLE_MAX 16
+static struct { uint32_t va; int (*fn)(CPU *); } g_guest_hle[GUEST_HLE_MAX];
+static unsigned g_guest_hle_n;
+
+/* The span of bound addresses, so DCALL's test on the hot path is two
+ * compares. Empty until something is bound: lo above hi is never true. */
+uint32_t es3_guest_hle_lo = 0xFFFFFFFFu, es3_guest_hle_hi = 0;
+
+int es3_guest_hle_run(CPU *c, uint32_t va)
+{
+    unsigned k;
+    for (k = 0; k < g_guest_hle_n; k++)
+        if (g_guest_hle[k].va == va) return g_guest_hle[k].fn(c);
+    return 0;
+}
+
+void es3_bind_guest(uint32_t va, int (*fn)(CPU *))
+{
+    if (g_guest_hle_n >= GUEST_HLE_MAX) {
+        fprintf(stderr, "[bind] no room for a handler at %08X\n", va);
+        return;
+    }
+    g_guest_hle[g_guest_hle_n].va = va;
+    g_guest_hle[g_guest_hle_n].fn = fn;
+    g_guest_hle_n++;
+    if (va < es3_guest_hle_lo) es3_guest_hle_lo = va;
+    if (va > es3_guest_hle_hi) es3_guest_hle_hi = va;
+}
+
 /* Read once; a getenv per dispatch would dominate the thing being measured. */
 static int g_stack_trace = -1;
 void es3_stack_trace_init(void) { g_stack_trace = getenv("ES3_TRACE_STACK") != NULL; }
@@ -231,6 +277,11 @@ static void dispatch_inner(CPU *c, uint32_t va)
     uint32_t ova;
 
     if (HLE_IS_ADDR(va)) { hle_call(c, HLE_ID_OF(va)); return; }
+
+    /* A guest function this runtime answers itself - see es3_bind_guest().
+     * One load and a branch when nothing is bound, which is the usual case. */
+    if (va >= es3_guest_hle_lo && va <= es3_guest_hle_hi &&
+        es3_guest_hle_run(c, va)) return;
 
     /* A thunk address, not a guest VA. Lifted code that reads a slot this
      * runtime handed to a real library - a window procedure, a comparator -

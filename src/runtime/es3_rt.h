@@ -283,6 +283,11 @@ static inline float hle_bits_to_float(uint32_t bits)
 /* Address -> lifted function, and the import sentinels on the way past.
  * Generated: recomp_funcs_list.h is the X-macro of every VA that lifted. */
 void dispatch(CPU *c, uint32_t va);
+
+/* Answer a guest function from the runtime. The handler sets eax and
+ * consumes the return address the way the lifted function would, and
+ * returns 1 when it has handled the call. See dispatch.c. */
+void es3_bind_guest(uint32_t va, int (*fn)(CPU *));
 void dispatch_jmp(CPU *c, uint32_t va);
 
 /* Is `va` a function this build lifted? For a host that wants to check before
@@ -312,7 +317,21 @@ void dispatch_build_index(void);
  * Indirect calls - a vtable slot, a task table, anything computed - still go
  * through dispatch(), which is the whole reason it exists.
  */
-#define DCALL(va, fn) do { es3_note_dispatch(va); fn(c); } while (0)
+/* A bound guest function has to be caught here too, and this is the hot path.
+ *
+ * es3_bind_guest() lets the runtime answer a guest function - the cabinet's
+ * I/O board check is one - and a DIRECT call never reaches dispatch(), so the
+ * binding would silently do nothing for the 146,736 call sites the driver
+ * rewrote. It did, for exactly one build.
+ *
+ * The cost has to stay near zero. `va` is a compile-time constant at every one
+ * of those sites, so a range test against the lowest and highest bound address
+ * folds to two compares against globals and is false everywhere - and when
+ * nothing is bound the range is empty and it is false immediately. */
+extern uint32_t es3_guest_hle_lo, es3_guest_hle_hi;
+int es3_guest_hle_run(CPU *c, uint32_t va);
+
+#define DCALL(va, fn) do {                                                      es3_note_dispatch(va);                                                  if ((va) >= es3_guest_hle_lo && (va) <= es3_guest_hle_hi &&                 es3_guest_hle_run(c, (va))) break;                                  fn(c);                                                              } while (0)
 
 /* The guest function whose lifted body contains a host address - what a fault
  * in two million lines of generated C needs to be legible. */

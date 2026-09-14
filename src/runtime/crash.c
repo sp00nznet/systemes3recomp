@@ -290,15 +290,21 @@ static uint32_t last_va_on(unsigned long tid, uint32_t *import_va)
     return 0;
 }
 
-/* ES3_PEEK=959b0c,930094 - guest globals, printed with every thread report.
+/* ES3_PEEK=959b0c,**959b64+3c - guest state, printed with every thread report.
  *
- * A recompiled game keeps its state where the original kept it, so a static
- * address out of the disassembly is still the right address at run time, and
- * printing one is usually cheaper than working out which lifted function to
- * instrument. As a word, as a float, and as the word it points at, because
- * which of those it is is the thing being asked.
+ * A recompiled game keeps its state where the original kept it, so an address
+ * out of the disassembly is still the right address at run time, and reading
+ * one is usually cheaper than working out which lifted function to instrument.
+ *
+ * The stars are the point. Game state is rarely a global - it is a global
+ * holding a pointer to an object holding a pointer to the thing you want, and
+ * `mov eax,[0x959b64]; mov edi,[eax]; cmp ...[edi+0x3c]` is what the
+ * disassembly actually says. So an entry is some number of dereferences, an
+ * address, and an offset: `**959b64+3c` is exactly that line, and prints the
+ * eight words there.
  */
-static uint32_t g_peek[8];
+#define PEEK_MAX 8
+static struct { uint32_t addr, off; unsigned stars; } g_peek[PEEK_MAX];
 static unsigned g_npeek;
 static int g_peek_read;
 
@@ -306,12 +312,23 @@ static void peek_init(void)
 {
     const char *e = getenv("ES3_PEEK");
     g_peek_read = 1;
-    while (e && *e && g_npeek < 8) {
+    while (e && *e && g_npeek < PEEK_MAX) {
+        unsigned stars = 0;
         char *end;
-        unsigned long v = strtoul(e, &end, 16);
+        unsigned long v;
+        while (*e == '*') { stars++; e++; }
+        v = strtoul(e, &end, 16);
         if (end == e) break;
-        g_peek[g_npeek++] = (uint32_t)v;
-        e = *end == ',' ? end + 1 : end;
+        g_peek[g_npeek].addr = (uint32_t)v;
+        g_peek[g_npeek].stars = stars;
+        g_peek[g_npeek].off = 0;
+        e = end;
+        if (*e == '+') {
+            g_peek[g_npeek].off = (uint32_t)strtoul(e + 1, &end, 16);
+            e = end;
+        }
+        g_npeek++;
+        if (*e == ',') e++;
     }
 }
 
@@ -321,7 +338,7 @@ static void peek_init(void)
 static int readable(uint32_t a, size_t n)
 {
     MEMORY_BASIC_INFORMATION mi;
-    if (!VirtualQuery((LPCVOID)(uintptr_t)a, &mi, sizeof mi)) return 0;
+    if (!a || !VirtualQuery((LPCVOID)(uintptr_t)a, &mi, sizeof mi)) return 0;
     if (mi.State != MEM_COMMIT) return 0;
     if (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
     return a + n <= (uint32_t)(uintptr_t)mi.BaseAddress + (uint32_t)mi.RegionSize;
@@ -329,28 +346,32 @@ static int readable(uint32_t a, size_t n)
 
 static void report_peeks(void)
 {
-    unsigned k;
+    unsigned k, j;
     if (!g_peek_read) peek_init();
     for (k = 0; k < g_npeek; k++) {
-        uint32_t a = g_peek[k], v;
-        float f;
-        if (!readable(a, 4)) {
-            fprintf(stderr, "  peek %08X  unreadable\n", a);
+        uint32_t v = g_peek[k].addr;
+        unsigned s;
+        int bad = 0;
+        for (s = 0; s < g_peek[k].stars; s++) {
+            if (!readable(v, 4)) { bad = 1; break; }
+            v = *(const uint32_t *)(uintptr_t)v;
+        }
+        if (bad || !readable(v + g_peek[k].off, 32)) {
+            fprintf(stderr, "  peek %.*s%08X+%X  unreadable\n",
+                    (int)g_peek[k].stars, "********", g_peek[k].addr,
+                    g_peek[k].off);
             continue;
         }
-        v = *(const uint32_t *)(uintptr_t)a;
-        memcpy(&f, &v, 4);
-        fprintf(stderr, "  peek %08X  = %08X  %.6g", a, v, (double)f);
-        if (v >= 0x10000u && readable(v, 8)) {
-            uint32_t p0 = ((const uint32_t *)(uintptr_t)v)[0];
-            uint32_t p1 = ((const uint32_t *)(uintptr_t)v)[1];
-            float f1;
-            memcpy(&f1, &p1, 4);
-            fprintf(stderr, "   -> [0]=%08X [4]=%08X (%.6g)", p0, p1, (double)f1);
-        }
+        v += g_peek[k].off;
+        fprintf(stderr, "  peek %.*s%08X+%X -> %08X:",
+                (int)g_peek[k].stars, "********", g_peek[k].addr,
+                g_peek[k].off, v);
+        for (j = 0; j < 8; j++)
+            fprintf(stderr, " %08X", ((const uint32_t *)(uintptr_t)v)[j]);
         fprintf(stderr, "\n");
     }
 }
+
 
 void es3_report_threads(void)
 {
