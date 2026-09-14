@@ -75,6 +75,9 @@ static const char JVS_IDENT[] =
 
 #define FIFO_SIZE 4096
 
+/* What the cabinet's switches are holding right now - see ES3_JVS_SEQ. */
+static uint32_t g_sw_sys, g_sw_p1, g_sw_p2;
+
 typedef struct {
     HANDLE handle;               /* the value the game holds as its COM port */
     unsigned char out[FIFO_SIZE];/* node -> game, waiting to be read */
@@ -232,9 +235,12 @@ static void handle_packet(unsigned char dest, const unsigned char *data,
         case 0x20: {                             /* SWINP: players, bytes */
             unsigned players = data[i++], bytes = data[i++], p, b;
             body[len++] = 0x01;
-            body[len++] = 0x00;                  /* system: test not pressed */
-            for (p = 0; p < players; p++)
-                for (b = 0; b < bytes; b++) body[len++] = 0x00;
+            body[len++] = (unsigned char)g_sw_sys;   /* test switch lives here */
+            for (p = 0; p < players; p++) {
+                uint32_t w = p == 0 ? g_sw_p1 : p == 1 ? g_sw_p2 : 0;
+                for (b = 0; b < bytes; b++)
+                    body[len++] = (unsigned char)(w >> (8 * (bytes - 1 - b)));
+            }
             break;
         }
 
@@ -446,11 +452,75 @@ static void finish_read(void)
  * does not write until a read has come back - which is the deadlock this
  * exists to break. Ten milliseconds is far finer than any timeout a serial
  * driver sets and costs nothing measurable. */
+/*
+ * ES3_JVS_SEQ - press the cabinet's switches on a timetable.
+ *
+ * A desktop has no test and service buttons, and the first screen this game
+ * reaches that anybody can act on is the operator menu, which is driven
+ * entirely by them. So: a comma-separated list of `<ms>:<field>=<hex>`, where
+ * field is `sys`, `p1` or `p2` and ms is milliseconds since the board opened.
+ *
+ *   ES3_JVS_SEQ="600000:p1=0200,600100:p1=0"
+ *
+ * A press is two entries, down and up - deliberately, because how long a
+ * button is held is something a menu can care about and guessing it here
+ * would be the kind of help that hides a bug.
+ */
+#define JVS_SEQ_MAX 32
+static struct { unsigned when; unsigned char field; uint32_t bits; } g_seq[JVS_SEQ_MAX];
+static unsigned g_nseq, g_seq_done;
+static ULONGLONG g_seq_t0;
+
+static void seq_init(void)
+{
+    const char *s = getenv("ES3_JVS_SEQ");
+    g_seq_t0 = GetTickCount64();
+    while (s && *s && g_nseq < JVS_SEQ_MAX) {
+        char *end;
+        unsigned when = (unsigned)strtoul(s, &end, 10);
+        unsigned char field;
+        if (end == s || *end != ':') break;
+        s = end + 1;
+        if (!_strnicmp(s, "sys", 3))     { field = 0; s += 3; }
+        else if (!_strnicmp(s, "p1", 2)) { field = 1; s += 2; }
+        else if (!_strnicmp(s, "p2", 2)) { field = 2; s += 2; }
+        else break;
+        if (*s != '=') break;
+        g_seq[g_nseq].when = when;
+        g_seq[g_nseq].field = field;
+        g_seq[g_nseq].bits = (uint32_t)strtoul(s + 1, &end, 16);
+        g_nseq++;
+        s = *end == ',' ? end + 1 : end;
+    }
+    if (g_nseq)
+        fprintf(stderr, "[jvs] %u scheduled switch change(s)\n", g_nseq);
+}
+
+static void seq_tick(void)
+{
+    unsigned elapsed;
+    if (g_seq_done >= g_nseq) return;
+    elapsed = (unsigned)(GetTickCount64() - g_seq_t0);
+    while (g_seq_done < g_nseq && g_seq[g_seq_done].when <= elapsed) {
+        unsigned k = g_seq_done++;
+        switch (g_seq[k].field) {
+        case 0: g_sw_sys = g_seq[k].bits; break;
+        case 1: g_sw_p1  = g_seq[k].bits; break;
+        default: g_sw_p2 = g_seq[k].bits; break;
+        }
+        fprintf(stderr, "[jvs] %ums: %s = %04X\n", g_seq[k].when,
+                g_seq[k].field == 0 ? "sys" : g_seq[k].field == 1 ? "p1" : "p2",
+                g_seq[k].bits);
+    }
+}
+
 static DWORD WINAPI jvs_ticker(void *unused)
 {
     (void)unused;
+    seq_init();
     for (;;) {
         Sleep(10);
+        seq_tick();
         EnterCriticalSection(&g_port.lock);
         finish_read();
         LeaveCriticalSection(&g_port.lock);
