@@ -255,13 +255,9 @@ static const char *guest_str(uint32_t va, char *buf, size_t n)
  * expects is the one it gets. */
 void es3_hle_gethostbyname(CPU *c, HleId id)
 {
-    static struct hostent he;
-    static char name[256];
-    static unsigned long addr;
-    static char *addrs[2];
-    static char *aliases[1];
-    static int said;
+    static char loopback[] = "127.0.0.1";
     static char self[256];
+    static int said;
 
     char asked[256];
     const char *want = guest_str(A32(0), asked, sizeof asked);
@@ -285,19 +281,15 @@ void es3_hle_gethostbyname(CPU *c, HleId id)
         fprintf(stderr, "[allnet] resolve '%s' -> 127.0.0.1\n", want ? want : "?");
     }
 
-    strncpy_s(name, sizeof name, want ? want : "localhost", _TRUNCATE);
-    addr = htonl(INADDR_LOOPBACK);
-    addrs[0] = (char *)&addr;
-    addrs[1] = NULL;
-    aliases[0] = NULL;
-    he.h_name = name;
-    he.h_aliases = aliases;
-    he.h_addrtype = AF_INET;
-    he.h_length = 4;
-    he.h_addr_list = addrs;
-
-    c->eax = (uint32_t)(uintptr_t)&he;
-    c->esp += 4 + 4 * 1;              /* __stdcall, one argument */
+    /* Rewrite the name and let Winsock build the hostent, rather than
+     * returning one of ours. A static of our own is only a valid guest pointer
+     * while the address space stays flat and 1:1, and the caller has every
+     * right to expect the per-thread buffer the real gethostbyname documents -
+     * including its lifetime, and including a second call on the same thread
+     * invalidating the first. The real resolver gives all of that for free,
+     * and "127.0.0.1" needs no resolving. */
+    wr32(c->esp + 4u, (uint32_t)(uintptr_t)loopback);
+    hle_call_native(c, id);
 }
 
 /*

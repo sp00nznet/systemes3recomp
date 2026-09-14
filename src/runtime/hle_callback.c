@@ -86,6 +86,17 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
         for (i = 0; i < 64; i++) {
             if (seen[i] == self) break;
             if (!seen[i] && InterlockedCompareExchange(&seen[i], self, 0) == 0) {
+                /* Make an overflow on this thread survivable long enough to be
+                 * reported. Without a guarantee, the guard page is the last
+                 * page: the kernel raises STATUS_STACK_OVERFLOW, has nowhere
+                 * to build the exception frame, and ends the process on the
+                 * spot - no vectored handler, no unhandled filter, no Windows
+                 * Error Reporting record, and an exit code that belongs to
+                 * nothing in the source. Reserving 64 KB below the guard page
+                 * leaves room for dispatch, so the fault arrives at the
+                 * handler like any other and says what it is. */
+                ULONG guarantee = 64u << 10;
+                SetThreadStackGuarantee(&guarantee);
                 /* And how much real stack it has. Lifted code carries the
                  * whole call graph on it - one C frame per guest function plus
                  * dispatch in between - and a thread this runtime did not

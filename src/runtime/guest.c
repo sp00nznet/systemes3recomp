@@ -423,6 +423,11 @@ static DWORD WINAPI guest_thread(void *unused)
      * ends on the first OutputDebugString - which is what it did. */
     g_guest_tid = GetCurrentThreadId();
     es3_teb_cover(g_guest_stack_lo, g_guest_stack_lo + STACK_SZ);
+    {   /* Room below the guard page for the kernel to dispatch an overflow on
+         * this thread too - see the same call in hle_callback.c. */
+        ULONG guarantee = 64u << 10;
+        SetThreadStackGuarantee(&guarantee);
+    }
     dispatch(g_entry_cpu, guest_entry());
     return 0;
 }
