@@ -41,10 +41,55 @@
 static int g_trace;
 static int g_started;
 
+/* Guest-visible, so it has to outlive the call. */
+static char g_loopback[] = "127.0.0.1";
+
 static unsigned short allnet_port(void)
 {
     const char *s = getenv("ES3_ALLNET_PORT");
     return (unsigned short)(s ? atoi(s) : 80);
+}
+
+/*
+ * The address the resolvers hand out - and why it is not 127.0.0.1.
+ *
+ * alAbEx validates every address it is given before it will use one.
+ * 0x007B5EA0 does it in six instructions: ntohl the address, reject anything
+ * at or below 0.255.255.255, reject 127.0.0.0/8, reject 240.0.0.0 and above.
+ * So answering the ALL.Net host with loopback is answering with the one
+ * address the library is certain is wrong: alAbExInit returns an error, the
+ * client's status word at [this+0x94] is set to 4, 0x00679470 reports the
+ * network as a problem and the cabinet files E05-55. All of that from a reply
+ * the game never got to disagree with.
+ *
+ * 192.0.2.1 is TEST-NET-1 (RFC 5737), reserved for documentation and
+ * guaranteed never to be a real host - so it cannot collide with anything on
+ * this machine's network, and es3_hle_connect() sends it to 127.0.0.1 where
+ * the listener actually is. The listener stays on loopback: nothing here opens
+ * a port the LAN can reach.
+ */
+static uint32_t allnet_addr(void)
+{
+    static uint32_t cached;
+    const char *s;
+    if (cached) return cached;
+    s = getenv("ES3_ALLNET_ADDR");
+    cached = inet_addr(s && *s ? s : "192.0.2.1");
+    if (cached == INADDR_NONE) cached = inet_addr("192.0.2.1");
+    return cached;
+}
+
+/* The same address in the form a resolver argument wants. Guest-visible, so it
+ * has to outlive the call: a file static, like the rest of this. */
+static const char *allnet_addr_str(void)
+{
+    static char s[16];
+    struct in_addr a;
+    if (!s[0]) {
+        a.s_addr = allnet_addr();
+        strncpy_s(s, sizeof s, inet_ntoa(a), _TRUNCATE);
+    }
+    return s;
 }
 
 /* stat=1 is "you may play". The rest is what alAbEx looks for by substring:
@@ -104,13 +149,18 @@ static int reply_body(char *out, size_t n, const char *path)
     if (strstr(path, "DownloadOrder"))
         return sprintf_s(out, n, "stat=1&uri=&host=");
 
+    /* uri and host are where the client goes next, so they carry the same
+     * address the resolvers hand out - not 127.0.0.1, which alAbEx rejects
+     * before it will use it (see allnet_addr). connect() puts it back on
+     * loopback, which is where this listener is. */
     return sprintf_s(out, n,
-        "stat=1&uri=http://127.0.0.1/&host=127.0.0.1"
+        "stat=1&uri=http://%s/&host=%s"
         "&place_id=0123&name=RECOMP&nickname=RECOMP"
         "&region0=1&region_name0=W&region_name1=X"
         "&region_name2=Y&region_name3=Z"
         "&country=JPN&timezone=+09:00"
         "&year=%04d&month=%d&day=%d&hour=%d&minute=%d&second=%d",
+        allnet_addr_str(), allnet_addr_str(),
         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
         tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
@@ -255,7 +305,6 @@ static const char *guest_str(uint32_t va, char *buf, size_t n)
  * expects is the one it gets. */
 void es3_hle_gethostbyname(CPU *c, HleId id)
 {
-    static char loopback[] = "127.0.0.1";
     static char self[256];
     static int said;
 
@@ -275,10 +324,12 @@ void es3_hle_gethostbyname(CPU *c, HleId id)
 
     if (!said) {
         said = 1;
-        fprintf(stderr, "[allnet] '%s' -> 127.0.0.1 (ES3_NO_ALLNET to let the "
-                        "real resolver have it)\n", want ? want : "?");
+        fprintf(stderr, "[allnet] '%s' -> %s (ES3_NO_ALLNET to let the "
+                        "real resolver have it)\n", want ? want : "?",
+                allnet_addr_str());
     } else if (g_trace) {
-        fprintf(stderr, "[allnet] resolve '%s' -> 127.0.0.1\n", want ? want : "?");
+        fprintf(stderr, "[allnet] resolve '%s' -> %s\n", want ? want : "?",
+                allnet_addr_str());
     }
 
     /* Rewrite the name and let Winsock build the hostent, rather than
@@ -288,8 +339,13 @@ void es3_hle_gethostbyname(CPU *c, HleId id)
      * including its lifetime, and including a second call on the same thread
      * invalidating the first. The real resolver gives all of that for free,
      * and "127.0.0.1" needs no resolving. */
-    wr32(c->esp + 4u, (uint32_t)(uintptr_t)loopback);
+    wr32(c->esp + 4u, (uint32_t)(uintptr_t)allnet_addr_str());
     hle_call_native(c, id);
+    /* The answer, not just the question. 0x004641F0 branches on it: a null
+     * hostent sets the client's state to 2 and returns without resolving
+     * anything else, which from outside looks exactly like a hang. */
+    if (g_trace)
+        fprintf(stderr, "[allnet]   hostent %08X\n", c->eax);
 }
 
 /*
@@ -309,7 +365,6 @@ void es3_hle_gethostbyname(CPU *c, HleId id)
  */
 void es3_hle_getaddrinfo(CPU *c, HleId id)
 {
-    static char loopback[] = "127.0.0.1";
     static char self[256];
     static int said;
 
@@ -338,7 +393,7 @@ void es3_hle_getaddrinfo(CPU *c, HleId id)
         fprintf(stderr, "[allnet] getaddrinfo '%s' -> 127.0.0.1\n", want);
     }
 
-    wr32(c->esp + 4u, (uint32_t)(uintptr_t)loopback);
+    wr32(c->esp + 4u, (uint32_t)(uintptr_t)g_loopback);
     hle_call_native(c, id);
 }
 
@@ -348,9 +403,25 @@ void es3_hle_getaddrinfo(CPU *c, HleId id)
  * ignore it, to have an address from its own configuration, or to talk to a
  * port nothing here is listening on. These say which, and then get out of the
  * way - the real winsock does the work either way. */
+/* The invented address, put back on loopback. Both connect() and sendto()
+ * need it: alAbEx will not accept 127.0.0.1 as a server, but the traceroute
+ * the same client runs before it is a raw ICMP echo to whatever the resolver
+ * said - and only loopback answers one on a machine with no store router. */
+static void to_loopback(uint32_t sa)
+{
+    unsigned char *b = (unsigned char *)(uintptr_t)sa;
+    uint32_t a, lo;
+    if (!b || b[0] != AF_INET) return;
+    memcpy(&a, b + 4, 4);
+    if (a != allnet_addr()) return;
+    lo = inet_addr("127.0.0.1");
+    memcpy(b + 4, &lo, 4);
+}
+
 void es3_hle_connect(CPU *c, HleId id)
 {
     uint32_t sa = A32(1);
+    to_loopback(sa);
     if (g_trace && sa) {
         const unsigned char *b = (const unsigned char *)(uintptr_t)sa;
         fprintf(stderr, "[allnet] connect -> %u.%u.%u.%u:%u\n",
@@ -446,6 +517,7 @@ void es3_hle_bind(CPU *c, HleId id)
 void es3_hle_sendto(CPU *c, HleId id)
 {
     uint32_t len = A32(2), to = A32(4);
+    to_loopback(to);
     if (g_trace) {
         const unsigned char *p = (const unsigned char *)(uintptr_t)A32(1);
         unsigned i, show = len > 16 ? 16 : len;

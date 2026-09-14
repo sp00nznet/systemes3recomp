@@ -895,15 +895,17 @@ void hle_register_callbacks(void)
     if (!getenv("ES3_NO_ALLNET"))
         hle_bind("getaddrinfo", es3_hle_getaddrinfo);
     if (!getenv("ES3_NO_ALLNET")) {
+        /* Not trace-only: the connect hook is what puts the address the
+         * resolvers invented back on loopback. */
+        hle_bind("connect", es3_hle_connect);
+        hle_bind("sendto", es3_hle_sendto);
         hle_bind("WSAIoctl", es3_hle_wsaioctl);
         hle_bind("WinHttpConnect", es3_hle_winhttp_connect);
         hle_bind("WinHttpOpenRequest", es3_hle_winhttp_open_request);
     }
     if (getenv("ES3_TRACE_NET")) {
-        hle_bind("connect", es3_hle_connect);
         hle_bind("send", es3_hle_send);
         hle_bind("bind", es3_hle_bind);
-        hle_bind("sendto", es3_hle_sendto);
         hle_bind("recvfrom", es3_hle_recvfrom);
     }
     hle_bind("LoadLibraryW", hle_load_library);
