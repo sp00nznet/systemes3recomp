@@ -125,12 +125,75 @@ int es3_is_host_code(uint32_t va)
     return 1;
 }
 
+/*
+ * Never let it take the screen.
+ *
+ * Clamping CreateWindowEx is not enough and it is worth writing down why: the
+ * window the game makes is only where the picture goes. What takes the display
+ * is Direct3D, when the game calls IDirect3D9Ex::CreateDeviceEx with
+ * D3DPRESENT_PARAMETERS.Windowed = FALSE - and that is not an import. It is a
+ * vtable slot on an interface the game got back at run time, so it arrives
+ * here as hle_call_address() with a real function pointer and nothing to match
+ * on by name.
+ *
+ * So match on the address. The factory comes back from Direct3DCreate9Ex,
+ * which IS an import, and its vtable has CreateDevice at slot 16 and
+ * CreateDeviceEx at slot 20. Record those two, and when either is about to be
+ * called, set Windowed and drop the fullscreen display mode the Ex form
+ * requires to be NULL when windowed.
+ *
+ * ES3_FULLSCREEN turns this off for someone who actually wants the cabinet
+ * behaviour and has a spare screen.
+ */
+static uint32_t g_d3d_create_device, g_d3d_create_device_ex;
+
+void es3_d3d_note_factory(uint32_t iface)
+{
+    uint32_t vt;
+    if (!iface || g_d3d_create_device_ex) return;
+    vt = rd32(iface);
+    if (!vt) return;
+    g_d3d_create_device    = rd32(vt + 4 * 16);
+    g_d3d_create_device_ex = rd32(vt + 4 * 20);
+    fprintf(stderr, "[d3d] CreateDevice at %08X, CreateDeviceEx at %08X\n",
+            g_d3d_create_device, g_d3d_create_device_ex);
+}
+
+/* D3DPRESENT_PARAMETERS: Windowed is at +0x20, the refresh rate at +0x30. */
+static void force_windowed(CPU *c, uint32_t target)
+{
+    static int off = -1;
+    uint32_t pp;
+    if (off < 0) off = getenv("ES3_FULLSCREEN") != NULL;
+    if (off || !g_d3d_create_device_ex) return;
+    if (target != g_d3d_create_device && target != g_d3d_create_device_ex) return;
+
+    pp = A32(5);
+    if (!pp) return;
+    if (!rd32(pp + 0x20)) {
+        static unsigned char said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[d3d] the game asked for an exclusive fullscreen "
+                            "device at %ux%u; making it windowed instead "
+                            "(ES3_FULLSCREEN=1 to allow it)\n",
+                    rd32(pp), rd32(pp + 4));
+        }
+        wr32(pp + 0x20, 1);          /* Windowed = TRUE */
+        wr32(pp + 0x30, 0);          /* a windowed device must ask for 0 Hz */
+        if (target == g_d3d_create_device_ex)
+            wr32(c->esp + 4 + 4 * 6, 0);   /* pFullscreenDisplayMode = NULL */
+    }
+}
+
 void hle_call_address(CPU *c, uint32_t target)
 {
     hybrid_regs r;
 
     r.eax = c->eax; r.ecx = c->ecx; r.edx = c->edx; r.ebx = c->ebx;
     r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;
+
+    force_windowed(c, target);
 
     hybrid_call_machine(&r, target);
 
@@ -140,6 +203,35 @@ void hle_call_address(CPU *c, uint32_t target)
 }
 
 static void native_thunk(CPU *c, HleId id) { hle_call_native(c, id); }
+
+/*
+ * A forwarded import that never comes back, called the ordinary way.
+ *
+ * hybrid_call_machine points the REAL esp at the guest's frame, which is
+ * exactly right for a function that returns: the arguments are there, and the
+ * callee's own `ret N` says how much to unwind. It is exactly wrong for one
+ * that does not return.
+ *
+ * `_endthreadex` runs the CRT's thread teardown, and part of that teardown is
+ * the FLS destructor that frees this thread's callback arena - which is the
+ * memory the guest frame, and therefore the real esp, is standing on. The
+ * teardown gets a few calls further and then a plain `ret` in ntdll reads
+ * unmapped memory. That is a stack the kernel cannot dispatch an exception on,
+ * so there is no handler, no filter and no log: the process is simply gone
+ * with 0xC0000005 eight seconds into the boot.
+ *
+ * So call it as C, from the host's own stack. Nothing needs marshalling back,
+ * because there is no back.
+ */
+void hle_call_native_noreturn(CPU *c, HleId id)
+{
+    typedef void (__stdcall *exit_fn)(unsigned);
+    exit_fn f = (exit_fn)g_native[id];
+    unsigned code = A32(0);
+    if (!f) { fprintf(stderr, "[hle] %s is not bound\n", hle_name(id)); abort(); }
+    f(code);
+    abort();                 /* it said it would not return */
+}
 
 /* The first call to each import, in order, when ES3_TRACE_IMPORTS is set.
  *

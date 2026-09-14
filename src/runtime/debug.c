@@ -159,6 +159,49 @@ int es3_debug_self(void)
                                 mi.State == MEM_COMMIT ? "committed" :
                                 mi.State == MEM_RESERVE ? "RESERVED, not committed"
                                                         : "FREE");
+                    /* And the stack it was standing on, which is the question
+                     * when the address that faulted is just below the bottom
+                     * of something. Is that something the thread's own stack,
+                     * or a region it was borrowing? */
+                    {
+                        HANDLE th = OpenThread(THREAD_GET_CONTEXT, FALSE,
+                                               ev.dwThreadId);
+                        if (th) {
+                            CONTEXT cx;
+                            memset(&cx, 0, sizeof cx);
+                            cx.ContextFlags = CONTEXT_CONTROL;
+                            if (GetThreadContext(th, &cx)) {
+                                fprintf(stderr, "\n        esp=%08X ebp=%08X",
+                                        (uint32_t)cx.Esp, (uint32_t)cx.Ebp);
+                                if (VirtualQueryEx(pi.hProcess,
+                                                   (LPCVOID)(uintptr_t)cx.Esp,
+                                                   &mi, sizeof mi))
+                                    fprintf(stderr, ", standing in %08X..%08X %s",
+                                            (uint32_t)(uintptr_t)mi.AllocationBase,
+                                            (uint32_t)(uintptr_t)mi.BaseAddress +
+                                                (uint32_t)mi.RegionSize,
+                                            mi.State == MEM_COMMIT ? "committed"
+                                                                   : "not committed");
+                            }
+                            CloseHandle(th);
+                        }
+                    }
+                    /* And the instruction itself. A fault address names a
+                     * place; the bytes name what it was doing there, and with
+                     * no symbols for a JIT or a driver that is the only way to
+                     * tell a push from a string move. Disassemble them with
+                     * whatever is to hand - they are x86. */
+                    {
+                        unsigned char code[16];
+                        SIZE_T got = 0;
+                        if (ReadProcessMemory(pi.hProcess, r->ExceptionAddress,
+                                              code, sizeof code, &got) && got) {
+                            SIZE_T k;
+                            fprintf(stderr, "\n        bytes:");
+                            for (k = 0; k < got; k++)
+                                fprintf(stderr, " %02X", code[k]);
+                        }
+                    }
                 }
                 if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
                     r->NumberParameters >= 2)

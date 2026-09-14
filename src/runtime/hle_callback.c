@@ -308,6 +308,84 @@ static void hle_set_window_long(CPU *c, HleId id)
  */
 #define THREAD_STACK_FLOOR (8u << 20)
 
+/*
+ * Keep the game in a window, and keep it there.
+ *
+ * An ES3 title is a cabinet program: it asks for a borderless window the size
+ * of the cabinet's screen and expects to own the display. On a desktop that
+ * means it covers everything, including whatever you were doing - and a
+ * recompiled game under development is something you run dozens of times an
+ * hour while reading a log next to it.
+ *
+ * So the window it actually gets is an ordinary framed one, at a size that
+ * fits on a desktop, unless ES3_FULLSCREEN says otherwise. The game is told
+ * nothing: the client area it asked for is what CreateWindowEx is given, and
+ * WS_POPUP - which is what makes it borderless and screen-sized - is traded
+ * for WS_OVERLAPPEDWINDOW.
+ *
+ * SetWindowPos is clamped for the same reason, because the game moves and
+ * resizes its own window afterwards.
+ */
+static int windowed(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("ES3_FULLSCREEN") == NULL;
+    return on;
+}
+
+#define ES3_MAX_W 1280
+#define ES3_MAX_H 720
+
+static void hle_create_window(CPU *c, HleId id)
+{
+    if (windowed()) {
+        uint32_t style = A32(3);
+        int w = (int)A32(6), h = (int)A32(7);
+        if (style & 0x80000000u) {                    /* WS_POPUP */
+            static unsigned char said;
+            if (!said) {
+                said = 1;
+                fprintf(stderr, "[hle] the game asked for a borderless %dx%d "
+                                "window; giving it a framed one that fits on a "
+                                "desktop (ES3_FULLSCREEN=1 to allow it)\n", w, h);
+            }
+            style = (style & ~0x80000000u) | 0x00CF0000u;   /* WS_OVERLAPPEDWINDOW */
+            wr32(c->esp + 4 + 4 * 3, style);
+        }
+        if (w > ES3_MAX_W) wr32(c->esp + 4 + 4 * 6, (uint32_t)ES3_MAX_W);
+        if (h > ES3_MAX_H) wr32(c->esp + 4 + 4 * 7, (uint32_t)ES3_MAX_H);
+        wr32(c->esp + 4 + 4 * 4, 64);                 /* x */
+        wr32(c->esp + 4 + 4 * 5, 64);                 /* y */
+    }
+    hle_call_native(c, id);
+}
+
+/* SetWindowPos(hwnd, after, x, y, cx, cy, flags) - arguments 4 and 5. */
+static void hle_set_window_pos(CPU *c, HleId id)
+{
+    if (windowed()) {
+        if ((int)A32(4) > ES3_MAX_W) wr32(c->esp + 4 + 4 * 4, (uint32_t)ES3_MAX_W);
+        if ((int)A32(5) > ES3_MAX_H) wr32(c->esp + 4 + 4 * 5, (uint32_t)ES3_MAX_H);
+    }
+    hle_call_native(c, id);
+}
+
+/* Direct3DCreate9Ex(SDKVersion, ppD3D) - the factory comes back through the
+ * out-parameter, and its vtable is the only way to recognise CreateDeviceEx
+ * later, because that one is a slot and not an import. */
+static void hle_d3d_create9ex(CPU *c, HleId id)
+{
+    uint32_t pp = A32(1);
+    hle_call_native(c, id);
+    if (pp && c->eax == 0) es3_d3d_note_factory(rd32(pp));
+}
+
+static void hle_thread_exit(CPU *c, HleId id)
+{
+    fprintf(stderr, "[exit] a guest thread ended through %s\n", hle_name(id));
+    hle_call_native_noreturn(c, id);
+}
+
 static void hle_create_thread(CPU *c, HleId id)
 {
     uint32_t want = A32(1);
@@ -492,9 +570,16 @@ void hle_register_callbacks(void)
      * so does the process, with whatever code it passed. A clean exit code 0
      * and an empty log is what that looks like from outside. */
     hle_bind("_CxxThrowException", hle_cxx_throw);
+    ptrs += (unsigned)hle_bind("CreateWindowExW", hle_create_window);
+    ptrs += (unsigned)hle_bind("CreateWindowExA", hle_create_window);
+    ptrs += (unsigned)hle_bind("SetWindowPos", hle_set_window_pos);
+    ptrs += (unsigned)hle_bind("Direct3DCreate9Ex", hle_d3d_create9ex);
     if (getenv("ES3_NO_THREAD_PUMP"))
         hle_bind("D3DX10CreateThreadPump", hle_no_thread_pump);
-    exits += (unsigned)hle_bind("ExitThread", hle_give_up);
+    /* These two end a thread, and they must not do it standing on the guest's
+     * emulated stack - the teardown frees it. See hle_call_native_noreturn. */
+    exits += (unsigned)hle_bind("ExitThread", hle_thread_exit);
+    exits += (unsigned)hle_bind("_endthreadex", hle_thread_exit);
     exits += (unsigned)hle_bind("PostQuitMessage", hle_give_up);
     exits += (unsigned)hle_bind("UnhandledExceptionFilter", hle_give_up);
 

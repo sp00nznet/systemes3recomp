@@ -485,6 +485,7 @@ void es3_install_crash_handler(void)
     static int done;
     if (done) return;
     done = 1;
+    es3_stack_trace_init();
     InitializeCriticalSection(&g_thunk_lock);
     g_thunk_lock_ready = 1;
     open_trail();

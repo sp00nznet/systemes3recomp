@@ -80,6 +80,10 @@ uint32_t dispatch_owner(const void *host)
 
 static void dispatch_inner(CPU *c, uint32_t va);
 
+/* Read once; a getenv per dispatch would dominate the thing being measured. */
+static int g_stack_trace = -1;
+void es3_stack_trace_init(void) { g_stack_trace = getenv("ES3_TRACE_STACK") != NULL; }
+
 void dispatch(CPU *c, uint32_t va)
 {
     es3_note_dispatch(va);
@@ -88,6 +92,64 @@ void dispatch(CPU *c, uint32_t va)
      * is a CPU: the return address the caller pushed is the top of the guest
      * stack, and "who called this" is most of what the question was. A
      * function reached through a vtable has no caller you can grep for. */
+#ifdef _WIN32
+    /* ES3_TRACE_STACK: is esp even pointing at memory?
+     *
+     * The first version of this watched the emulated stack descend, on the
+     * theory that something was leaking frames. Nothing was: no thread ever
+     * went a quarter of a megabyte below its own low-water mark. What was
+     * happening is cruder and the check for it is simpler - esp had gone
+     * somewhere unmapped.
+     *
+     * A guest stack pointer that has gone somewhere
+     * unmapped survives every dispatch until the first push - or until a
+     * forwarded call runs on it, at which point the callee's own prologue
+     * faults with a stack the kernel cannot dispatch on, and nothing reports
+     * anything. Checking it here names the last function that was fine.
+     *
+     * One VirtualQuery per region, not per dispatch: a stack stays in its
+     * region for millions of calls. */
+    if (g_stack_trace > 0) {
+        static __declspec(thread) uint32_t ok_lo, ok_hi, last_va;
+        static __declspec(thread) unsigned char said;
+        uint32_t e = c->esp;
+        /* The window esp is known to be safe in. Narrow, because it is only
+         * ever widened by a probe BELOW esp: what a forwarded call needs is
+         * room underneath, and VirtualQuery cannot tell you that about the
+         * address you give it - it describes the region from that page
+         * upwards. Asking it about esp answers a different question, which is
+         * how this check first reported "3840 bytes left" on a stack with two
+         * megabytes under it. */
+        if ((e < ok_lo || e >= ok_hi) && !said) {
+            MEMORY_BASIC_INFORMATION mi;
+            uint32_t probe = e - (64u << 10);
+            if (e < (64u << 10) ||
+                !VirtualQuery((LPCVOID)(uintptr_t)probe, &mi, sizeof mi) ||
+                mi.State != MEM_COMMIT) {
+                said = 1;
+                fprintf(stderr, "\n[stack] thread %lu has esp=%08X with less "
+                                "than 64 KB of committed memory below it.\n"
+                                "        Entering %08X; last time there was "
+                                "room it was entering %08X.\n"
+                                "        A forwarded call from here runs a real "
+                                "callee on this stack, and its prologue is what\n"
+                                "        faults - on a stack the kernel cannot "
+                                "dispatch an exception on, so nothing reports it.\n",
+                        GetCurrentThreadId(), e, va, last_va);
+                es3_report_state("what ran it down");
+                fflush(stderr);
+            } else {
+                ok_lo = e;      /* re-probe whenever it goes deeper than this */
+                ok_hi = (uint32_t)(uintptr_t)mi.BaseAddress +
+                        (uint32_t)mi.RegionSize;
+                last_va = va;
+            }
+        } else if (!said) {
+            last_va = va;
+        }
+    }
+#endif
+
     if (es3_watched(va)) {
         uint32_t from = rd32(c->esp), at = es3_dispatch_count();
         fprintf(stderr, "[watch] %08X entered from %08X (thread %lu, "

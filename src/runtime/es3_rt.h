@@ -185,6 +185,15 @@ void hle_call_address(CPU *c, uint32_t target);
  * rather than reimplementing the call. */
 void hle_call_native(CPU *c, HleId id);
 
+/* Forward an import that never returns, from the HOST stack rather than the
+ * guest's. Thread exit runs teardown that frees the very arena a guest frame
+ * sits on - see the note in hle_native.c. */
+void hle_call_native_noreturn(CPU *c, HleId id);
+
+/* Remember an IDirect3D9Ex factory so its CreateDevice/CreateDeviceEx slots
+ * can be recognised later and forced windowed - see hle_native.c. */
+void es3_d3d_note_factory(uint32_t iface);
+
 /* Name and originating DLL for an id, for diagnostics. */
 const char *hle_name(HleId id);
 const char *hle_dll(HleId id);
@@ -264,6 +273,9 @@ unsigned es3_dispatch_count(void);
 /* What the address space is being spent on - printed when a C++ throw goes
  * uncaught, because on 32 bits the likeliest thrower is `operator new`. */
 void es3_report_memory(void);
+
+/* ES3_TRACE_STACK, read once at startup - see dispatch.c. */
+void es3_stack_trace_init(void);
 
 /* ES3_DEBUG=1: relaunch as our own debuggee and report every exception the
  * child takes, including the ones no handler inside it can see - a thread that
