@@ -172,12 +172,27 @@ def load_catalog(path, code_end=None, read_va=None, code_start=None):
     # point outside its extent, and the lifter turns each of those into a
     # dispatch that nothing answers.
     if read_va is not None:
+        lo = code_start if code_start is not None else 0
         added = pcrecomp.disasm().close_dispatch_targets(
-            read_va, funcs, code_start if code_start is not None else 0,
-            code_end, aliases=aliases)
+            read_va, funcs, lo, code_end, aliases=aliases)
         if added:
             print("[*] %d branch targets had no dispatchable body" % added,
                   file=sys.stderr)
+
+        # ...and check those, because a branch target can be mid-instruction
+        # too: the branch is then in a function that was itself decoded out of
+        # phase. `0x00768279` is the second byte of `jne 0x768273` and came
+        # back this way after the first pass had correctly removed it, so the
+        # game ran an `stc` that is not in the binary, 271,636 calls in.
+        #
+        # A target removed here leaves a dispatch nothing answers, which the
+        # runtime reports by name. That is the better failure: a fabricated
+        # instruction is silent.
+        again = pcrecomp.disasm().drop_mid_instruction_entries(
+            read_va, funcs, lo, code_end)
+        if again:
+            print("[*] %d of those were not instruction boundaries either"
+                  % again, file=sys.stderr)
     after = sum(funcs.values())
     if after < before:
         print("[*] clamped %d bytes of overlapping function bodies to %d"
