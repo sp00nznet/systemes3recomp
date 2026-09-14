@@ -199,8 +199,7 @@ static void wrap_callback_field(CPU *c, HleId id, unsigned field_off)
             unsigned k;
             fprintf(stderr, "[wndclass] %s @%08X:", hle_name(id), sp);
             for (k = 0; k < 12; k++) fprintf(stderr, " %08X", rd32(sp + 4 * k));
-            fprintf(stderr, "
-");
+            fprintf(stderr, "\n");
         }
     }
     hle_call_native(c, id);

@@ -210,7 +210,7 @@ void hle_call_native(CPU *c, HleId id)
         int na = purge > 0 ? purge / 4 : 4;
         int k;
         fprintf(stderr, "[call] %s(", hle_name(id));
-        for (k = 0; k < na && k < 8; k++)
+        for (k = 0; k < na && k < 12; k++)
             fprintf(stderr, "%s%08X", k ? ", " : "", A32(k));
         fprintf(stderr, ")");
     }
