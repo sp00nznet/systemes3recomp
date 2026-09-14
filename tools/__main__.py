@@ -5,6 +5,7 @@
   py -3.11 -m tools scan   <game.exe> <catalog.json>        recover the functions
   py -3.11 -m tools recomp <game.exe> <catalog.json> <out>  lift it to C
   py -3.11 -m tools trail  [es3_trail.bin] [game.exe]      read the last run
+  py -3.11 -m tools watch  <game.exe> [args...]             run it as a debuggee
 
 `scan` is the slow step - an ES3 binary is stripped, so its function list has
 to be recovered by recursive descent rather than read out of a symbol table.
@@ -136,6 +137,14 @@ def cmd_trail(a):
         print("  %6d  t%-6u %08X  %s" % (i, tid, va, who))
 
 
+def cmd_watch(a):
+    """The run, from outside. See tools/watch.py for why this has to exist."""
+    from .watch import watch
+    if not a.argv:
+        sys.exit("give the executable to run")
+    sys.exit(watch(a.argv, quiet_first_chance=not a.all))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="tools", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -163,6 +172,13 @@ def main(argv=None):
     t.add_argument("--thread", type=int, default=0,
                    help="show only this thread - a worker pool buries everything else")
     t.set_defaults(fn=cmd_trail)
+
+    v = sub.add_parser("watch", help="run it under a debugger and say how it died")
+    v.add_argument("argv", nargs=argparse.REMAINDER,
+                   help="the exe (full path - the cwd is not searched) and its arguments")
+    v.add_argument("--all", action="store_true",
+                   help="print every first-chance exception, not just a tally")
+    v.set_defaults(fn=cmd_watch)
 
     a = p.parse_args(argv)
     a.fn(a)

@@ -306,7 +306,28 @@ static void hle_set_window_long(CPU *c, HleId id)
  * address space is cheap for a reservation, and a stack is reserved, not
  * committed.
  */
-#define THREAD_STACK_SIZE (8u << 20)
+/* Sixteen, measured, not chosen: at 8 MB this game overflowed a worker eight
+ * seconds into the boot and the process was gone with the log stopping
+ * mid-line; at 16 it boots. Not more - at 32, thirty worker threads reserve a
+ * gigabyte, the guest's own allocations start failing instead, and the run
+ * dies earlier and somewhere that looks nothing like a stack. */
+#define THREAD_STACK_SIZE (16u << 20)
+
+/* ES3_THREAD_STACK_MB raises the floor without a rebuild. It is a floor that
+ * has had to move once already, and the symptom when it is too low - a process
+ * that is simply gone, with a log that stops mid-line - looks like anything
+ * but a stack, so the knob is worth having where the next person will find it.
+ * Reservation only: thirty worker threads at 32 MB cost a gigabyte of address
+ * space and not one page of memory. */
+static uint32_t thread_stack_size(void)
+{
+    static uint32_t cached;
+    const char *e;
+    if (cached) return cached;
+    e = getenv("ES3_THREAD_STACK_MB");
+    cached = e && atoi(e) > 0 ? (uint32_t)atoi(e) << 20 : THREAD_STACK_SIZE;
+    return cached;
+}
 
 /*
  * Keep the game in a window, and keep it there.
@@ -395,7 +416,7 @@ static void hle_create_thread(CPU *c, HleId id)
         said = 1;
         fprintf(stderr, "[hle] the guest asks for %u KB thread stacks; "
                         "reserving %u MB for every one of them\n",
-                want >> 10, THREAD_STACK_SIZE >> 20);
+                want >> 10, thread_stack_size() >> 20);
     }
     /*
      * Both halves, or neither works.
@@ -410,7 +431,7 @@ static void hle_create_thread(CPU *c, HleId id)
      * It is argument 4 of CreateThread (dwCreationFlags) and argument 4 of
      * _beginthreadex (initflag), which forwards it, so one write serves both.
      */
-    wr32(c->esp + 4 + 4 * 1, THREAD_STACK_SIZE);
+    wr32(c->esp + 4 + 4 * 1, thread_stack_size());
     wr32(c->esp + 4 + 4 * 4, A32(4) | 0x00010000u);
     wrap_callback_arg(c, id, 2);
 }

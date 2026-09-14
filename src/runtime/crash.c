@@ -1083,6 +1083,64 @@ static BOOL WINAPI es3_terminate_process(HANDLE proc, UINT code)
     return g_nt_terminate(proc, (LONG)code) >= 0;
 }
 
+/* The last door. ExitProcess and TerminateProcess both funnel here, and so
+ * does anything that skips them - which is what this boot does.
+ *
+ * A trampoline IS needed this time, because unlike the two above this one can
+ * be called for another process and return. An x86 ntdll syscall stub begins
+ * `mov eax, imm32`, which is exactly five bytes, so copying five and jumping
+ * back lands on an instruction boundary. Checked rather than assumed: if the
+ * first byte is not 0xB8 the hook is not installed. */
+static LONG (WINAPI *g_nt_terminate_tramp)(HANDLE, LONG);
+
+static LONG WINAPI es3_nt_terminate(HANDLE proc, LONG code)
+{
+    void *from = _ReturnAddress();
+    int ours = 0;
+    uint32_t base = 0;
+    const char *mod = module_at((uint32_t)(uintptr_t)from, &ours, &base);
+
+    fprintf(stderr, "\n[exit] NtTerminateProcess(%p, %ld) from %p",
+            (void *)proc, code, from);
+    if (mod) fprintf(stderr, ", in %s+0x%X", mod,
+                     (unsigned)((uint32_t)(uintptr_t)from - base));
+    if (ours) fprintf(stderr, " - lifted %08X", dispatch_owner(from));
+    fprintf(stderr, " (thread %lu, dispatch %u)\n",
+            GetCurrentThreadId(), es3_dispatch_count());
+    fflush(stderr);
+    return g_nt_terminate_tramp(proc, code);
+}
+
+static void hook_nt_terminate(void)
+{
+    unsigned char *p = (unsigned char *)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtTerminateProcess");
+    unsigned char *tramp;
+    DWORD old;
+    intptr_t rel;
+
+    if (!p || p[0] != 0xB8) {                 /* not the stub shape expected */
+        fprintf(stderr, "[exit] ntdll!NtTerminateProcess at %p starts %02X, "
+                        "not B8 - not hooking it\n",
+                (void *)p, p ? p[0] : 0);
+        return;
+    }
+    tramp = (unsigned char *)VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE,
+                                          PAGE_EXECUTE_READWRITE);
+    if (!tramp) return;
+    memcpy(tramp, p, 5);
+    tramp[5] = 0xE9;
+    rel = (intptr_t)(p + 5) - (intptr_t)(tramp + 10);
+    memcpy(tramp + 6, &rel, 4);
+    g_nt_terminate_tramp = (LONG (WINAPI *)(HANDLE, LONG))tramp;
+
+    if (!VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    rel = (intptr_t)es3_nt_terminate - (intptr_t)(p + 5);
+    p[0] = 0xE9;
+    memcpy(p + 1, &rel, 4);
+    VirtualProtect(p, 5, old, &old);
+}
+
 void es3_watch_exit(void)
 {
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
@@ -1114,8 +1172,17 @@ void es3_watch_exit(void)
         VirtualProtect(p, 5, old, &old);
     }
 
-    fprintf(stderr, "[exit] watching ExitProcess and TerminateProcess "
-                    "(ES3_NO_EXIT_HOOK to leave them alone)\n");
+    hook_nt_terminate();
+
+    /* With the addresses, because "watching" was printed for two runs during
+     * which nothing was in fact watched: the addresses say which module the
+     * forwarder landed in and make the claim checkable. */
+    fprintf(stderr, "[exit] watching ExitProcess %p, TerminateProcess %p, "
+                    "NtTerminateProcess %p (%sinstalled)"
+                    " (ES3_NO_EXIT_HOOK to leave them alone)\n",
+            (void *)GetProcAddress(k32, "ExitProcess"),
+            (void *)GetProcAddress(k32, "TerminateProcess"),
+            (void *)g_nt_terminate, g_nt_terminate_tramp ? "" : "NOT ");
 }
 #else
 void es3_watch_exit(void) {}

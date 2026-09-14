@@ -352,9 +352,17 @@ static void force_windowed_dxgi(CPU *c, uint32_t target)
 static int g_trace_host = -1;
 static uint32_t g_host_seen[4096];
 
-static void note_host_call(uint32_t target)
+static int host_peek(uint32_t at, uint32_t *out)
+{
+    SIZE_T got = 0;
+    return ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(uintptr_t)at,
+                             out, 4, &got) && got == 4;
+}
+
+static void note_host_call(CPU *c, uint32_t target)
 {
     unsigned slot;
+    uint32_t self, vt, i;
     MEMORY_BASIC_INFORMATION mi;
     wchar_t w[MAX_PATH];
     const wchar_t *leaf;
@@ -366,6 +374,22 @@ static void note_host_call(uint32_t target)
     slot = (target >> 2) & 4095u;
     if (g_host_seen[slot] == target) return;
     g_host_seen[slot] = target;
+
+    /* Which vtable slot it is, when the first stack argument is a COM object
+     * whose vtable holds this address. "d3d11.dll+0xF1060" names nothing;
+     * "slot 8 of 57BB6E70" is a line you can count down to in the header. */
+    self = A32(0);
+    /* Through ReadProcessMemory, not rd32: `this` is a host heap pointer, and
+     * a stack argument that is not one at all still has to be safe to try. */
+    vt = 0;
+    if (self) host_peek(self, &vt);
+    for (i = 0; vt && i < 200u; i++) {
+        uint32_t m = 0;
+        if (!host_peek(vt + 4u * i, &m) || m != target) continue;
+        fprintf(stderr, "[hostcall] vtable slot %u of %08X (vtable %08X)\n",
+                i, self, vt);
+        break;
+    }
 
     if (!VirtualQuery((LPCVOID)(uintptr_t)target, &mi, sizeof mi) ||
         mi.Type != MEM_IMAGE ||
@@ -397,7 +421,7 @@ void hle_call_address(CPU *c, uint32_t target)
      * in its back buffer once Present has returned. */
     if (target && target == g_dxgi_present) es3_dxgi_present(g_dxgi_swapchain);
     note_device_call(target);
-    note_host_call(target);
+    note_host_call(c, target);
 
     hybrid_call_machine(&r, target);
 
