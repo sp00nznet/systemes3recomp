@@ -222,8 +222,7 @@ void hle_call_native(CPU *c, HleId id)
     c->esp = r.esp;          /* the real callee's own unwind - see hle_call */
 
     if (g_watch[id])
-        fprintf(stderr, " = %08X   (last error %lu)
-", r.eax, GetLastError());
+        fprintf(stderr, " = %08X   (last error %lu)\n", r.eax, GetLastError());
 
     /* A callee that returned a float left the host stack one deeper than it
      * found it. No table says which ones those are; the depth does. */
