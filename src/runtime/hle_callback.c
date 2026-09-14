@@ -858,6 +858,16 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("EnumWindows", hle_enum_windows);
     hle_bind("GetSystemMetrics", hle_get_system_metrics);
     hle_bind("IpRenewAddress", hle_ip_renew);
+    if (!getenv("ES3_NO_ALLNET"))
+        hle_bind("gethostbyname", es3_hle_gethostbyname);
+    if (!getenv("ES3_NO_ALLNET")) {
+        hle_bind("WinHttpConnect", es3_hle_winhttp_connect);
+        hle_bind("WinHttpOpenRequest", es3_hle_winhttp_open_request);
+    }
+    if (getenv("ES3_TRACE_NET")) {
+        hle_bind("connect", es3_hle_connect);
+        hle_bind("send", es3_hle_send);
+    }
     hle_bind("LoadLibraryW", hle_load_library);
     hle_bind("LoadLibraryA", hle_load_library);
     hle_bind("CreateFileW", hle_create_file);

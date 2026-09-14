@@ -258,15 +258,12 @@ void dispatch(CPU *c, uint32_t va)
         fprintf(stderr, "[from %08X] %08X\n", g_trace_from, va);
 
     if (es3_watched(va)) {
-        uint32_t from = rd32(c->esp), at = es3_dispatch_count();
-        fprintf(stderr, "[watch] %08X entered from %08X (thread %lu, "
-                        "dispatch %u)\n", va, from, GetCurrentThreadId(), at);
+        uint32_t from = rd32(c->esp);
+        es3_watch_enter(c, va);
         /* And what it answered. An init step that returns a bool is the whole
          * question when the chain after it never runs. */
         dispatch_inner(c, va);
-        fprintf(stderr, "[watch] %08X returned %08X to %08X (thread %lu, "
-                        "dispatch %u)\n", va, c->eax, from,
-                        GetCurrentThreadId(), es3_dispatch_count());
+        es3_watch_leave(c, va, from);
         return;
     }
     dispatch_inner(c, va);

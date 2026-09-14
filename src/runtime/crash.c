@@ -78,9 +78,31 @@ static uint32_t g_watch_va[8];
 static unsigned g_nwatch;
 static int g_watch_read;
 
+/* The range the watched addresses span, so DCALL can decline in two compares.
+ * A direct call does not go through dispatch() - the driver rewrites 146,736
+ * of them - so without this a watch on a function the game calls directly is
+ * silently never reported, which reads as "it never ran". */
+uint32_t es3_watch_lo = 0xFFFFFFFFu, es3_watch_hi = 0;
+
+/* Said on the way in and on the way out, by both callers - dispatch() and
+ * DCALL - so a watch reads the same whichever way the call arrived. */
+void es3_watch_enter(CPU *c, uint32_t va)
+{
+    fprintf(stderr, "[watch] %08X entered from %08X (thread %lu, dispatch %u)\n",
+            va, rd32(c->esp), GetCurrentThreadId(), es3_dispatch_count());
+}
+
+void es3_watch_leave(CPU *c, uint32_t va, uint32_t from)
+{
+    fprintf(stderr, "[watch] %08X returned %08X to %08X (thread %lu, "
+                    "dispatch %u)\n", va, c->eax, from, GetCurrentThreadId(),
+            es3_dispatch_count());
+}
+
 static void watch_va_init(void)
 {
     const char *s = getenv("ES3_WATCH_VA");
+    unsigned k;
     g_watch_read = 1;
     while (s && *s && g_nwatch < 8) {
         char *end;
@@ -88,6 +110,10 @@ static void watch_va_init(void)
         if (end == s) break;
         g_watch_va[g_nwatch++] = (uint32_t)v;
         s = *end == ',' ? end + 1 : end;
+    }
+    for (k = 0; k < g_nwatch; k++) {
+        if (g_watch_va[k] < es3_watch_lo) es3_watch_lo = g_watch_va[k];
+        if (g_watch_va[k] > es3_watch_hi) es3_watch_hi = g_watch_va[k];
     }
     if (g_nwatch)
         fprintf(stderr, "[watch] %u guest address(es)\n", g_nwatch);
@@ -111,7 +137,13 @@ unsigned es3_dispatch_count(void) { return RING_COUNT; }
  * the operating system writes them back, for ever, at whatever rate the game
  * makes calls. This exists to measure that rather than argue about it. */
 static int g_trail_off;
-void es3_trail_init(void) { g_trail_off = getenv("ES3_NO_TRAIL") != NULL; }
+void es3_trail_init(void)
+{
+    g_trail_off = getenv("ES3_NO_TRAIL") != NULL;
+    /* Eagerly, so DCALL's range test is armed before the first
+     * direct call rather than after the first dispatch. */
+    if (!g_watch_read) watch_va_init();
+}
 
 void es3_note_dispatch(uint32_t va)
 {
@@ -410,7 +442,7 @@ static void poke_init(void)
         fprintf(stderr, "[poke] holding %u guest value(s) down\n", g_npoke);
 }
 
-static void apply_pokes(void)
+void es3_apply_pokes(void)
 {
     unsigned k, o;
     if (!g_poke_read) poke_init();
@@ -523,7 +555,7 @@ void es3_report_threads(void)
     }
     CloseHandle(snap);
     fprintf(stderr, "  %u thread(s)\n", n);
-    apply_pokes();
+    es3_apply_pokes();
     report_peeks();
     fflush(stderr);
 }

@@ -152,6 +152,12 @@ void hle_call(CPU *c, HleId id);
  * more than one IAT slot - and returns how many, so 0 means the game does not
  * import it, which is not an error: most titles do not import most of them. */
 int hle_bind(const char *name, HleHandler fn);
+/* allnet.c - the authentication host, answered on loopback. */
+void es3_hle_gethostbyname(CPU *c, HleId id);
+void es3_hle_connect(CPU *c, HleId id);
+void es3_hle_send(CPU *c, HleId id);
+void es3_hle_winhttp_connect(CPU *c, HleId id);
+void es3_hle_winhttp_open_request(CPU *c, HleId id);
 
 /* The same, qualified by DLL, and what a board handler must use. An import's
  * identity is (DLL, name): the OKAO Vision libraries export by ordinal only,
@@ -331,7 +337,7 @@ void dispatch_build_index(void);
 extern uint32_t es3_guest_hle_lo, es3_guest_hle_hi;
 int es3_guest_hle_run(CPU *c, uint32_t va);
 
-#define DCALL(va, fn) do {                                                      es3_note_dispatch(va);                                                  if ((va) >= es3_guest_hle_lo && (va) <= es3_guest_hle_hi &&                 es3_guest_hle_run(c, (va))) break;                                  fn(c);                                                              } while (0)
+#define DCALL(va, fn) do {                                                      es3_note_dispatch(va);                                                  if ((va) >= es3_guest_hle_lo && (va) <= es3_guest_hle_hi &&                 es3_guest_hle_run(c, (va))) break;                                  if ((va) >= es3_watch_lo && (va) <= es3_watch_hi && es3_watched(va)) {      uint32_t _from = rd32(c->esp);                                          es3_watch_enter(c, (va));                                               fn(c);                                                                  es3_watch_leave(c, (va), _from);                                        break;                                                              }                                                                       fn(c);                                                              } while (0)
 
 /* The guest function whose lifted body contains a host address - what a fault
  * in two million lines of generated C needs to be legible. */
@@ -339,6 +345,9 @@ uint32_t dispatch_owner(const void *host);
 
 /* ES3_WATCH_VA support - see crash.c. */
 int es3_watched(uint32_t va);
+extern uint32_t es3_watch_lo, es3_watch_hi;
+void es3_watch_enter(CPU *c, uint32_t va);
+void es3_watch_leave(CPU *c, uint32_t va, uint32_t from);
 unsigned es3_dispatch_count(void);
 
 /* What the address space is being spent on - printed when a C++ throw goes
@@ -377,6 +386,9 @@ void es3_watch_cpu(const CPU *c);
  * that has noticed something impossible. */
 void es3_report_state(const char *why);
 void es3_report_threads(void);
+/* ES3_POKE, held down. The game writes its own value back, so this has
+ * to run far more often than a thread report does - see the watchdog. */
+void es3_apply_pokes(void);
 
 /* An argument that is really a string - ASCII or UTF-16, NULL if it is
  * neither. Shared so a handler in hle_callback.c can print one too. */
