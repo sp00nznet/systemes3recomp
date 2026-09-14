@@ -193,7 +193,12 @@ static void wrap_callback_field(CPU *c, HleId id, unsigned field_off)
     uint32_t base = guest_image_base();
     if (sp) {
         uint32_t proc = rd32(sp + field_off);
-        if (proc >= base && proc < base + guest_image_size())
+        /* ES3_NO_WNDPROC_THUNK isolates one question when a window will not
+         * create: is the thunk the problem, or the environment it runs in?
+         * Without the thunk the procedure runs UNLIFTED and will fault the
+         * moment it is called - so this is a diagnostic, never a setting. */
+        if (proc >= base && proc < base + guest_image_size() &&
+            !getenv("ES3_NO_WNDPROC_THUNK"))
             wr32(sp + field_off, es3_callback(proc));
         if (getenv("ES3_TRACE_CALLS")) {
             unsigned k;
