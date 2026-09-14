@@ -86,6 +86,30 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
     }
 #endif
 
+    /* The first crossings, with what the real caller passed and what the guest
+     * gave back. For a window procedure that is (hwnd, message, wParam,
+     * lParam) and an LRESULT, which is exactly the conversation that decides
+     * whether CreateWindowEx succeeds: returning 0 to WM_NCCREATE (0x0081)
+     * makes it fail, and it reports ERROR_NOT_ENOUGH_MEMORY when it does. */
+    {
+        static volatile LONG shown;
+        int show = getenv("ES3_TRACE_CALLS") &&
+                   InterlockedIncrement(&shown) <= 24;
+        if (show)
+            fprintf(stderr, "[r2l] %08X(%08X, %08X, %08X, %08X)", ova,
+                    real_args[0], real_args[1], real_args[2], real_args[3]);
+
+        memset(&c, 0, sizeof c);
+        c.eax = r->eax; c.ecx = r->ecx; c.edx = r->edx; c.ebx = r->ebx;
+        c.esp = r->esp; c.ebp = r->ebp; c.esi = r->esi; c.edi = r->edi;
+
+        dispatch(&c, ova);
+
+        if (show)
+            fprintf(stderr, " = %08X\n", c.eax);
+    }
+    goto done;
+
     (void)real_args;
     memset(&c, 0, sizeof c);
     c.eax = r->eax; c.ecx = r->ecx; c.edx = r->edx; c.ebx = r->ebx;
@@ -93,6 +117,7 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
 
     dispatch(&c, ova);
 
+done:
     r->eax = c.eax;
     r->edx = c.edx;
     /* The fake return slot is the 4; anything beyond it is the callee's own
