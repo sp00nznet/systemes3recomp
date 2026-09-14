@@ -84,7 +84,21 @@ function(es3_runtime target generated_dir)
     #
     # The guest gets its own 8 MB stack, but the host thread runs the
     # dispatcher on top of whatever recursion the game's call graph produces,
-    # so give it room.
+    # so give it room - and then more room than that.
+    #
+    # 16 MB, and that is a compromise rather than a choice. Lifted code is far
+    # heavier on the real stack than the code it stands for - one C function
+    # per guest function, a dispatch() frame between each pair, a local for
+    # every emulated temporary - and Mario Kart overflows it after about four
+    # minutes of loading, reported as C00000FD on a thread that then cannot
+    # handle its own overflow.
+    #
+    # Raising it does not fix that, because a stack is a RESERVATION and this
+    # game has twenty-nine threads: 64 MB each ran the address space out inside
+    # fifteen seconds, and 32 MB moved the failure somewhere else again. The
+    # real answer is for lifted code to use less real stack per guest frame,
+    # not for every thread to reserve more. Measured, both ways, before
+    # settling back here.
     target_link_options(${target} PRIVATE
         /DYNAMICBASE:NO /SAFESEH:NO /STACK:16777216)
     # /BASE has to go through LINK_FLAGS and not target_link_options: the

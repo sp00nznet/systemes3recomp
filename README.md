@@ -239,41 +239,56 @@ nobody has found yet.
 
 ### Where it stops now
 
-The window is real, visible and the right size, and it is black. The game gets
-through its whole data load - five million guest calls, its own `*INF*` and
-`*ERR*` lines in the log, D3DX10's thread pump calling the game's own
-`ID3DX10DataLoader` methods as lifted code - and then, after about eight
-seconds, a thread runs off the bottom of its emulated stack.
+The window is real, framed, 1280x720, and black. Everything up to drawing works:
 
-**A C++ exception does not unwind the emulated stack.** That is the finding,
-and it is the next piece of design rather than the next bug.
+* `006AB300`, the function that brings the game up, **returns 1**. It returned
+  0 all through the previous round, and everything after it was skipped.
+* `004042C0` opens every subsystem, including the input one whose singleton a
+  task used to read while it was still null.
+* **Direct3D 9Ex creates its device and returns S_OK**, windowed.
+* The game loads its data, prints its own `*INF*` and `*ERR*` lines, and runs
+  its frame loop.
 
-The thread that dies has thrown and caught about three thousand exceptions in
-a row - `EnterCriticalSection`, `__uncaught_exception`, `LeaveCriticalSection`,
-over and over, once per failed `BlockRead`. Each one unwinds correctly as far
-as Windows is concerned, because the handlers and the `RtlUnwind` that calls
-them run as real code on the real stack. None of it touches `c->esp`, which is
-where the guest's stack pointer actually lives. So every throw leaks the frames
-below it, three thousand of them consume sixteen megabytes, and the next
-forwarded call pushes into memory that was never committed:
+And with `ES3_TRACE_D3D` the device's vtable is recorded and all hundred and
+twenty of its slots watched, and **not one is ever called**. No `Present`, no
+`Clear`, no `BeginScene`. The renderer is up and nothing asks it for anything,
+which is a useful negative: what is left is not a graphics problem.
 
-```
-[debug] first chance C0000005 at 037B7A52 (writing 7E81FDC0); target FREE
-[hybrid] arena 27 at 7E820000, 16 MB reserved
-```
+What is left is speed, and it is not a detail.
 
-`7E81FDC0` is `0x240` bytes below the base of that arena. The emulated stack
-went through the whole thing.
+| | |
+|---|---|
+| dispatches per second | **2.4 million** |
+| per dispatch | about **400 ns** |
+| frame steps in 30 seconds | **2 to 14**, depending on the run |
+| guest calls per frame | about **35 million** - it is still loading |
 
-Two ways forward, and they are not exclusive:
+Four hundred nanoseconds per guest call is the whole problem. The hottest
+function in a sampled window was `0041EAA0`, called ninety-seven thousand
+times: it is `fabsf`, two instructions, and every one of those calls went
+through `es3_note_dispatch`, a watch check, an import-range check, a thunk
+check, a table lookup and an indirect call into a C function that sets up a CPU
+frame.
 
-* **Stop the throws.** They come from `BlockRead` failing on files that exist
-  on disk, so something in the load path is wrong and the exceptions are a
-  symptom. Cheaper, and probably what the next session should do first.
-* **Unwind the emulated stack.** The honest fix: a guest `try` has to record
-  the emulated `esp` alongside its SEH registration, and the catch has to
-  restore it. That is the same class of work as thunking SEH handlers, which
-  this runtime also does not do yet.
+**The fix is that a direct call should be a direct call.** The lifter emits
+`push32(c, ret); dispatch(c, 0x0041EAA0u);` for `call 0x41eaa0`, and the driver
+knows - after the fact, from its own output - that `0041EAA0` is one of the
+functions it lifted. Emitting `push32(c, ret); L_0041EAA0(c);` instead removes
+the lookup entirely for the overwhelming majority of calls. That needs a
+generated header of declarations and one pass over the emitted text.
+
+Two things that were tried and measured and did **not** help, recorded so they
+are not tried again:
+
+* **An address-indexed dispatch table** in place of the binary search. Seventeen
+  megabytes of pointers, one load instead of fifteen probes: 2.38 million
+  dispatches a second, against 2.7 before. The search was not the cost.
+* **Bigger thread stacks.** Lifted code really does overflow 16 MB after about
+  four minutes of loading (C00000FD, on a thread that then cannot handle its
+  own overflow) - but a stack is a *reservation* and this game has twenty-nine
+  threads. 64 MB each ran the address space out in fifteen seconds; 32 MB moved
+  the failure somewhere else again. The answer is for lifted code to use less
+  real stack per guest frame, not for every thread to reserve more.
 
 ### Seeing a death that has no handler
 

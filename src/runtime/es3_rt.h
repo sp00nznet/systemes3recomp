@@ -270,6 +270,9 @@ void dispatch_jmp(CPU *c, uint32_t va);
  * handing the guest a callback address. */
 int dispatch_has(uint32_t va);
 
+/* Build the address-indexed dispatch table. Call once before the guest runs. */
+void dispatch_build_index(void);
+
 /* The guest function whose lifted body contains a host address - what a fault
  * in two million lines of generated C needs to be legible. */
 uint32_t dispatch_owner(const void *host);
@@ -284,6 +287,12 @@ void es3_report_memory(void);
 
 /* ES3_TRACE_STACK, read once at startup - see dispatch.c. */
 void es3_stack_trace_init(void);
+
+/* ES3_NO_TRAIL, read once at startup - see crash.c. */
+void es3_trail_init(void);
+
+/* ES3_TRACE_FROM, read once at startup - see dispatch.c. */
+void es3_trace_from_init(void);
 
 /* ES3_DEBUG=1: relaunch as our own debuggee and report every exception the
  * child takes, including the ones no handler inside it can see - a thread that

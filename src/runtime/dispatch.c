@@ -37,9 +37,49 @@ static const Entry g_table[] = { LIFTED_FUNCS(ENT) };
 
 #define N (sizeof g_table / sizeof g_table[0])
 
+/*
+ * One load, not fifteen.
+ *
+ * Every guest call goes through here, and a binary search over thirty-one
+ * thousand entries is fifteen dependent, branchy, cache-missing probes each
+ * time. Measured on Mario Kart that is most of the cost of running the game:
+ * 2.7 million dispatches a second, which is about a third of a frame.
+ *
+ * The lifted VAs all sit inside the guest's .text - four megabytes on this
+ * title - so a table indexed by the address itself is seventeen megabytes of
+ * pointers and answers in a single load. That is a lot of memory to spend on a
+ * lookup and it is the right trade: the hot functions are a few dozen, so the
+ * lines that matter stay in cache, and nothing else about a static recompiler
+ * is on the critical path this often.
+ *
+ * The search stays as the fallback, for the allocation failing and for a VA
+ * outside the span.
+ */
+static void (**g_fast)(CPU *);
+static uint32_t g_fast_lo, g_fast_hi;
+
+void dispatch_build_index(void)
+{
+    size_t i, span;
+    if (!N) return;
+    g_fast_lo = g_table[0].va;
+    g_fast_hi = g_table[N - 1].va + 1;
+    span = (size_t)(g_fast_hi - g_fast_lo);
+    g_fast = (void (**)(CPU *))calloc(span, sizeof *g_fast);
+    if (!g_fast) {
+        fprintf(stderr, "[dispatch] no room for the %u MB address index; "
+                        "falling back to a binary search per call\n",
+                (unsigned)((span * sizeof *g_fast) >> 20));
+        return;
+    }
+    for (i = 0; i < N; i++) g_fast[g_table[i].va - g_fast_lo] = g_table[i].fn;
+}
+
 static void (*find(uint32_t va))(CPU *)
 {
     size_t lo = 0, hi = N;
+    if (g_fast && va >= g_fast_lo && va < g_fast_hi)
+        return g_fast[va - g_fast_lo];
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
         if (g_table[mid].va == va) return g_table[mid].fn;
@@ -83,6 +123,16 @@ static void dispatch_inner(CPU *c, uint32_t va);
 /* Read once; a getenv per dispatch would dominate the thing being measured. */
 static int g_stack_trace = -1;
 void es3_stack_trace_init(void) { g_stack_trace = getenv("ES3_TRACE_STACK") != NULL; }
+
+static uint32_t g_trace_from;
+void es3_trace_from_init(void)
+{
+    const char *e = getenv("ES3_TRACE_FROM");
+    if (e) g_trace_from = (uint32_t)strtoul(e, NULL, 16);
+    if (g_trace_from)
+        fprintf(stderr, "[from] tracing every dispatch that returns to %08X\n",
+                g_trace_from);
+}
 
 void dispatch(CPU *c, uint32_t va)
 {
@@ -149,6 +199,17 @@ void dispatch(CPU *c, uint32_t va)
         }
     }
 #endif
+
+    /* ES3_TRACE_FROM=746de7 - every dispatch made from one call site.
+     *
+     * The question a watch cannot answer is "which of the things this loop
+     * calls is the one that hung", because the loop calls them through a
+     * vtable and there is no address to watch. The call SITE is fixed, though,
+     * and the return address on the guest stack is it. Printing the target of
+     * every dispatch that returns there lists the tasks in the order they are
+     * ticked, and the last one printed is the one that did not come back. */
+    if (g_trace_from && rd32(c->esp) == g_trace_from)
+        fprintf(stderr, "[from %08X] %08X\n", g_trace_from, va);
 
     if (es3_watched(va)) {
         uint32_t from = rd32(c->esp), at = es3_dispatch_count();

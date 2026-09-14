@@ -103,9 +103,20 @@ int es3_watched(uint32_t va)
 
 unsigned es3_dispatch_count(void) { return RING_COUNT; }
 
+/* ES3_NO_TRAIL: stop recording, and find out what recording costs.
+ *
+ * The ring is two stores per guest call, which sounds free and is not: it is
+ * two stores into an eight-megabyte MAPPED FILE, so the pages are dirty and
+ * the operating system writes them back, for ever, at whatever rate the game
+ * makes calls. This exists to measure that rather than argue about it. */
+static int g_trail_off;
+void es3_trail_init(void) { g_trail_off = getenv("ES3_NO_TRAIL") != NULL; }
+
 void es3_note_dispatch(uint32_t va)
 {
-    unsigned i = RING_COUNT;
+    unsigned i;
+    if (g_trail_off) return;
+    i = RING_COUNT;
 
 #ifdef _WIN32
     RING_TID(i) = __readfsdword(0x24);
@@ -485,7 +496,10 @@ void es3_install_crash_handler(void)
     static int done;
     if (done) return;
     done = 1;
+    es3_trail_init();
+    dispatch_build_index();
     es3_stack_trace_init();
+    es3_trace_from_init();
     InitializeCriticalSection(&g_thunk_lock);
     g_thunk_lock_ready = 1;
     open_trail();
