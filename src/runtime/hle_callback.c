@@ -195,6 +195,13 @@ static void wrap_callback_field(CPU *c, HleId id, unsigned field_off)
         uint32_t proc = rd32(sp + field_off);
         if (proc >= base && proc < base + guest_image_size())
             wr32(sp + field_off, es3_callback(proc));
+        if (getenv("ES3_TRACE_CALLS")) {
+            unsigned k;
+            fprintf(stderr, "[wndclass] %s @%08X:", hle_name(id), sp);
+            for (k = 0; k < 12; k++) fprintf(stderr, " %08X", rd32(sp + 4 * k));
+            fprintf(stderr, "
+");
+        }
     }
     hle_call_native(c, id);
 }
