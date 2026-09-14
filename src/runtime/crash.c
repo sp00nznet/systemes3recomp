@@ -304,7 +304,17 @@ static uint32_t last_va_on(unsigned long tid, uint32_t *import_va)
  * eight words there.
  */
 #define PEEK_MAX 8
-static struct { uint32_t addr, off; unsigned stars; } g_peek[PEEK_MAX];
+#define PEEK_OPS 8
+/* An entry is an address followed by a little program: '*' dereferences,
+ * '+hex' adds. Leading stars are the old spelling and still mean the same
+ * thing, so `**959b64+3c` reads as it always did; `95a86c*+8*` is "load the
+ * pointer, step to the array field, follow it" - which is the shape almost
+ * every piece of game state actually has. */
+static struct {
+    uint32_t addr;
+    unsigned nops;
+    struct { char op; uint32_t arg; } ops[PEEK_OPS];
+} g_peek[PEEK_MAX];
 static unsigned g_npeek;
 static int g_peek_read;
 
@@ -313,20 +323,24 @@ static void peek_init(void)
     const char *e = getenv("ES3_PEEK");
     g_peek_read = 1;
     while (e && *e && g_npeek < PEEK_MAX) {
-        unsigned stars = 0;
+        unsigned stars = 0, n = 0;
         char *end;
         unsigned long v;
         while (*e == '*') { stars++; e++; }
         v = strtoul(e, &end, 16);
         if (end == e) break;
         g_peek[g_npeek].addr = (uint32_t)v;
-        g_peek[g_npeek].stars = stars;
-        g_peek[g_npeek].off = 0;
         e = end;
-        if (*e == '+') {
-            g_peek[g_npeek].off = (uint32_t)strtoul(e + 1, &end, 16);
-            e = end;
+        while (stars-- && n < PEEK_OPS) g_peek[g_npeek].ops[n++].op = '*';
+        while (*e && *e != ',' && n < PEEK_OPS) {
+            if (*e == '*') { g_peek[g_npeek].ops[n].op = '*'; n++; e++; }
+            else if (*e == '+') {
+                g_peek[g_npeek].ops[n].op = '+';
+                g_peek[g_npeek].ops[n].arg = (uint32_t)strtoul(e + 1, &end, 16);
+                n++; e = end;
+            } else break;
         }
+        g_peek[g_npeek].nops = n;
         g_npeek++;
         if (*e == ',') e++;
     }
@@ -346,32 +360,26 @@ static int readable(uint32_t a, size_t n)
 
 static void report_peeks(void)
 {
-    unsigned k, j;
+    unsigned k, j, o;
     if (!g_peek_read) peek_init();
     for (k = 0; k < g_npeek; k++) {
         uint32_t v = g_peek[k].addr;
-        unsigned s;
         int bad = 0;
-        for (s = 0; s < g_peek[k].stars; s++) {
+        for (o = 0; o < g_peek[k].nops && !bad; o++) {
+            if (g_peek[k].ops[o].op == '+') { v += g_peek[k].ops[o].arg; continue; }
             if (!readable(v, 4)) { bad = 1; break; }
             v = *(const uint32_t *)(uintptr_t)v;
         }
-        if (bad || !readable(v + g_peek[k].off, 32)) {
-            fprintf(stderr, "  peek %.*s%08X+%X  unreadable\n",
-                    (int)g_peek[k].stars, "********", g_peek[k].addr,
-                    g_peek[k].off);
+        if (bad || !readable(v, 32)) {
+            fprintf(stderr, "  peek %08X: unreadable\n", g_peek[k].addr);
             continue;
         }
-        v += g_peek[k].off;
-        fprintf(stderr, "  peek %.*s%08X+%X -> %08X:",
-                (int)g_peek[k].stars, "********", g_peek[k].addr,
-                g_peek[k].off, v);
+        fprintf(stderr, "  peek %08X -> %08X:", g_peek[k].addr, v);
         for (j = 0; j < 8; j++)
             fprintf(stderr, " %08X", ((const uint32_t *)(uintptr_t)v)[j]);
         fprintf(stderr, "\n");
     }
 }
-
 
 void es3_report_threads(void)
 {
