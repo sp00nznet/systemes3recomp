@@ -86,6 +86,15 @@ static uint32_t rd16le(const unsigned char *p)
  */
 void es3_teb_cover(uint32_t lo, uint32_t hi)
 {
+    /* ES3_NO_TEB_COVER isolates the other half of a window that will not
+     * create: USER32 does look at these bounds, and a range spanning both
+     * stacks with unmapped space between them is not what it expects.
+     * Without the cover no `__try` in the guest can catch anything, so this
+     * is a diagnostic and never a setting. */
+    static int off = -1;
+    if (off < 0) off = getenv("ES3_NO_TEB_COVER") != NULL;
+    if (off) return;
+
     if (lo < __readfsdword(0x08)) __writefsdword(0x08, lo);   /* StackLimit */
     if (hi > __readfsdword(0x04)) __writefsdword(0x04, hi);   /* StackBase  */
 }
