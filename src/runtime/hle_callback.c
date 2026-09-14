@@ -493,28 +493,35 @@ static void hle_message_box(CPU *c, HleId id)
 }
 
 /*
- * ES3_NO_COM: refuse the serial port the JVS I/O board would be on.
+ * The serial port the I/O board is on, answered by jvs.c.
  *
- * A diagnostic, not a fix. This game opens COM1 at 19200 8N1, issues an
- * overlapped three-byte read - a JVS packet header - and waits for a reply
- * from a board that is not plugged into a desktop PC. It keeps presenting
- * frames while it waits, and every one of them is empty, because its state
- * machine has not reached anything that draws.
+ * CreateFile on a COM name hands back a handle of ours; everything that can be
+ * done to a serial port is then recognised by that handle and answered here
+ * rather than forwarded. A real port on a real machine is left completely
+ * alone - es3_jvs_open() returns 0 for any other name, and every one of these
+ * falls through to the host.
  *
- * The question that separates "waiting for the board" from "something else
- * entirely" is what the game does when the port is not there at all, and this
- * asks it. If a failed open produces a drawn error screen, the I/O is the only
- * thing between here and a picture; if the frames stay black either way, it is
- * not.
+ * The stdcall purges are written out rather than derived because these bypass
+ * hle_call_native entirely: there is no callee to pop the arguments, so this
+ * has to. Argument counts are from the Win32 headers and a wrong one corrupts
+ * the guest's stack immediately, which is at least a loud way to be wrong.
  */
+#define JVS_RET(c, val, argc) do { (c)->eax = (uint32_t)(val); \
+                                   (c)->esp += 4 + 4 * (argc); } while (0)
+
 static void hle_create_file(CPU *c, HleId id)
 {
     static int off = -1;
     const char *name;
+    uint32_t h;
 
     if (off < 0) off = getenv("ES3_NO_COM") != NULL;
-    name = off ? es3_arg_string(A32(0)) : NULL;
-    if (name) {
+    name = es3_arg_string(A32(0));
+
+    /* ES3_NO_COM: refuse the port outright. A diagnostic that separates "the
+     * board never answered" from "the game wanted the open itself to fail" -
+     * it does not, as it turns out, but it is the first thing to try. */
+    if (off && name) {
         const char *p = name;
         if (p[0] == '\\' && p[1] == '\\' && p[2] == '.' && p[3] == '\\') p += 4;
         if ((p[0] == 'C' || p[0] == 'c') && (p[1] == 'O' || p[1] == 'o') &&
@@ -526,12 +533,160 @@ static void hle_create_file(CPU *c, HleId id)
                                 "the JVS I/O board would be\n", name);
             }
             SetLastError(ERROR_FILE_NOT_FOUND);
-            c->eax = 0xFFFFFFFFu;                 /* INVALID_HANDLE_VALUE */
-            c->esp += 4 + 4 * 7;                  /* __stdcall, seven args */
+            JVS_RET(c, 0xFFFFFFFFu, 7);
             return;
         }
     }
+
+    h = name ? es3_jvs_open(name) : 0;
+    if (h) { SetLastError(0); JVS_RET(c, h, 7); return; }
     hle_call_native(c, id);
+}
+
+/* Configuring a port that is not a port. Every one of these succeeds, because
+ * the thing they configure - baud, parity, buffer sizes, timeouts - is a
+ * property of a wire this board does not have. */
+static void comm_ok(CPU *c, HleId id, int argc)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        es3_jvs_note(hle_name(id), A32(1), A32(2));
+        SetLastError(0); JVS_RET(c, 1, argc); return;
+    }
+    hle_call_native(c, id);
+}
+
+static void hle_setup_comm(CPU *c, HleId id)      { comm_ok(c, id, 3); }
+static void hle_purge_comm(CPU *c, HleId id)      { comm_ok(c, id, 2); }
+static void hle_set_comm_state(CPU *c, HleId id)  { comm_ok(c, id, 2); }
+static void hle_set_comm_mask(CPU *c, HleId id)   { comm_ok(c, id, 2); }
+static void hle_set_comm_timeouts(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) es3_jvs_set_timeouts(A32(1));
+    comm_ok(c, id, 2);
+}
+static void hle_cancel_io_ex(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) { es3_jvs_cancel(); SetLastError(0); JVS_RET(c, 1, 2); return; }
+    hle_call_native(c, id);
+}
+
+/* GetCommState and GetCommTimeouts are asked for a structure, and a caller
+ * that reads back what it set is entitled to something coherent. Zeroed with
+ * the size field right is coherent; the game overwrites both immediately. */
+static void hle_get_comm_state(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        uint32_t dcb = A32(1);
+        if (dcb) { memset((void *)(uintptr_t)dcb, 0, 28); wr32(dcb, 28); }
+        SetLastError(0);
+        JVS_RET(c, 1, 2);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+static void hle_get_comm_timeouts(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        uint32_t t = A32(1);
+        if (t) memset((void *)(uintptr_t)t, 0, 20);
+        SetLastError(0);
+        JVS_RET(c, 1, 2);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/* A modem status with nothing asserted - there is no modem, and the game only
+ * looks at this to decide whether the line is alive. */
+static void hle_get_comm_modem_status(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        uint32_t p = A32(1);
+        if (p) wr32(p, 0x0020);            /* MS_DSR_ON */
+        SetLastError(0);
+        JVS_RET(c, 1, 2);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/* WriteFile(h, buf, n, written, ovl) - the request goes straight into the
+ * board, which answers into the pipe the reads come out of. */
+static void hle_write_file(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        uint32_t n = A32(2), written = A32(3);
+        es3_jvs_write(A32(1), n);
+        if (written) wr32(written, n);
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/* WriteFileEx(h, buf, n, ovl, routine) - same, and the completion is reported
+ * at once because the write itself never blocks on a board that is a function
+ * call away. */
+static void hle_write_file_ex(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        uint32_t n = A32(2), ovl = A32(3);
+        es3_jvs_write(A32(1), n);
+        if (ovl) { wr32(ovl, 0); wr32(ovl + 4, n); }
+        es3_jvs_complete_write(ovl, n, A32(4));
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+static void hle_read_file(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        uint32_t got = es3_jvs_read(A32(1), A32(2)), read = A32(3);
+        if (read) wr32(read, got);
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/* ReadFileEx(h, buf, n, ovl, routine) - posted, not performed. It completes
+ * when the board has that many bytes to give, by an APC on this thread, which
+ * is where the game's completion routine expects to run. */
+static void hle_read_file_ex(CPU *c, HleId id)
+{
+    if (es3_jvs_is_port(A32(0))) {
+        es3_jvs_post_read(A32(1), A32(2), A32(3), A32(4));
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+static void hle_close_handle(CPU *c, HleId id)
+{
+    /* Keep the port: the game closes and reopens it when it decides the board
+     * is not answering, and a handle that went away would fail the reopen. */
+    if (es3_jvs_is_port(A32(0))) { SetLastError(0); JVS_RET(c, 1, 1); return; }
+    hle_call_native(c, id);
+}
+
+/* A DLL the game loads itself may rewrite the game's code - see
+ * es3_guest_diff(). Diff right after it lands, while nothing else has run. */
+static void hle_load_library(CPU *c, HleId id)
+{
+    const char *name = es3_arg_string(A32(0));
+    char kept[96];
+    strncpy(kept, name ? name : "a library", sizeof kept - 1);
+    kept[sizeof kept - 1] = 0;
+    hle_call_native(c, id);
+    if (c->eax) es3_guest_diff(kept);
 }
 
 static void hle_hook_proc(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
@@ -673,8 +828,24 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("SetWindowsHookExA", hle_hook_proc);
     ptrs += (unsigned)hle_bind("EnumWindows", hle_enum_windows);
     hle_bind("GetSystemMetrics", hle_get_system_metrics);
+    hle_bind("LoadLibraryW", hle_load_library);
+    hle_bind("LoadLibraryA", hle_load_library);
     hle_bind("CreateFileW", hle_create_file);
     hle_bind("CreateFileA", hle_create_file);
+    hle_bind("SetupComm", hle_setup_comm);
+    hle_bind("PurgeComm", hle_purge_comm);
+    hle_bind("SetCommState", hle_set_comm_state);
+    hle_bind("GetCommState", hle_get_comm_state);
+    hle_bind("SetCommMask", hle_set_comm_mask);
+    hle_bind("SetCommTimeouts", hle_set_comm_timeouts);
+    hle_bind("GetCommTimeouts", hle_get_comm_timeouts);
+    hle_bind("GetCommModemStatus", hle_get_comm_modem_status);
+    hle_bind("CancelIoEx", hle_cancel_io_ex);
+    hle_bind("WriteFile", hle_write_file);
+    hle_bind("WriteFileEx", hle_write_file_ex);
+    hle_bind("ReadFile", hle_read_file);
+    hle_bind("ReadFileEx", hle_read_file_ex);
+    hle_bind("CloseHandle", hle_close_handle);
     hle_bind("MessageBoxW", hle_message_box);
     hle_bind("MessageBoxA", hle_message_box);
     ptrs += (unsigned)hle_bind("CreateThread", hle_create_thread);

@@ -58,6 +58,8 @@ uint32_t guest_image_base(void);
 
 /* SizeOfImage, so a pointer can be tested for being guest code at all. */
 uint32_t guest_image_size(void);
+void     es3_guest_snapshot(uint32_t lo, uint32_t hi);
+void     es3_guest_diff(const char *when);
 
 /* Widen THIS thread's TEB stack bounds to include [lo, hi). Windows validates
  * an exception handler against those bounds, and lifted code never runs on the
@@ -77,6 +79,17 @@ uint32_t es3_dxgi_enum_outputs_addr(void);
 uint32_t es3_fake_output(void);
 uint32_t es3_dxgi_create_swapchain_addr(void);
 void es3_dxgi_present(uint32_t swapchain);
+
+/* src/runtime/jvs.c - the cabinet's I/O board, answered in software. */
+int      es3_jvs_is_port(uint32_t handle);
+uint32_t es3_jvs_open(const char *name);
+int      es3_jvs_write(uint32_t buf, uint32_t n);
+uint32_t es3_jvs_read(uint32_t buf, uint32_t n);
+void     es3_jvs_post_read(uint32_t buf, uint32_t n, uint32_t ovl, uint32_t routine);
+void     es3_jvs_complete_write(uint32_t ovl, uint32_t bytes, uint32_t routine);
+void     es3_jvs_cancel(void);
+void     es3_jvs_set_timeouts(uint32_t commtimeouts);
+void     es3_jvs_note(const char *what, uint32_t a, uint32_t b);
 
 /* ---- the import boundary ----
  *

@@ -27,6 +27,9 @@
 #include "es3_rt.h"
 #include "hybrid.h"
 #include "recomp_iat.h"
+#if __has_include("recomp_image.h")
+#include "recomp_image.h"
+#endif
 
 /* src/runtime/hle_callback.c - the real -> lifted side of the boundary. */
 uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args);
@@ -524,6 +527,72 @@ static int relaunch_reserving(uint32_t base, uint32_t size)
 }
 #endif
 
+/*
+ * Is this the executable the lifted code was made from?
+ *
+ * The generated C and the mapped image are two halves of one program. The C
+ * was compiled from one file's instructions; at run time it reads its
+ * constants, its vtables and its strings out of whatever file guest_load() is
+ * pointed at. If those are different files the result is not a crash, it is a
+ * program that behaves like neither.
+ *
+ * This game's tree ships two executables of exactly the same size, 33 bytes
+ * apart, and one of those differences is at the entry point: the patched build
+ * jumps to a stub that does LoadLibraryW(L"JVSEmuMK") - the cabinet's I/O
+ * emulator - and the clean build does not. Lift the patched one, run the clean
+ * one, and the lifted stub runs while the string it points at is a run of
+ * zeros in the image actually mapped. The game asks the loader for a DLL with
+ * no name, gets nothing, and falls back to a serial port with no board on it.
+ *
+ * Nothing about that looks wrong from outside. It boots, it loads, it runs a
+ * frame loop. So: fingerprint the file the build came from, check the one
+ * being loaded, and say so.
+ *
+ * A warning and not a refusal, because "which of these four builds is this"
+ * is a real question people will want to ask by just trying it - but it is
+ * loud, and it names both files.
+ */
+static uint64_t file_fingerprint(const unsigned char *p, size_t n)
+{
+    uint64_t h = 0xCBF29CE484222325ULL;
+    size_t i;
+    for (i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ULL;
+    return h;
+}
+
+static void check_image(const char *path, const unsigned char *img, size_t len)
+{
+#ifdef ES3_IMAGE_HASH
+    uint64_t got = file_fingerprint(img, len);
+    const char *leaf = strrchr(path, '\\');
+    const char *leaf2 = strrchr(path, '/');
+    if (leaf2 > leaf) leaf = leaf2;
+    leaf = leaf ? leaf + 1 : path;
+
+    if (got == (uint64_t)ES3_IMAGE_HASH && len == (size_t)ES3_IMAGE_SIZE) return;
+
+    fprintf(stderr,
+        "\n[image] THIS IS NOT THE EXECUTABLE THIS BUILD WAS LIFTED FROM.\n"
+        "        lifted from  %s  (%u bytes, %016llX)\n"
+        "        loading      %s  (%u bytes, %016llX)\n"
+        "        The generated C is this program's instructions and the file "
+        "above is where it\n"
+        "        reads every constant, vtable and string. Two builds that "
+        "differ by a handful of\n"
+        "        bytes still disagree about what those are, and the result "
+        "runs without ever\n"
+        "        looking wrong. Re-lift from the file you mean to run, or run "
+        "the one it was\n"
+        "        lifted from.\n\n",
+        ES3_IMAGE_NAME, (unsigned)ES3_IMAGE_SIZE,
+        (unsigned long long)ES3_IMAGE_HASH,
+        leaf, (unsigned)len, (unsigned long long)got);
+    fflush(stderr);
+#else
+    (void)path; (void)img; (void)len;
+#endif
+}
+
 int guest_load(const char *exe_path)
 {
     FILE *f;
@@ -588,12 +657,19 @@ int guest_load(const char *exe_path)
     memcpy((void *)(uintptr_t)g_base, img, hdr_size < (uint32_t)len ? hdr_size : (uint32_t)len);
 
     const unsigned char *sec = img + pe + 24 + opt_size;
+    check_image(exe_path, img, (size_t)len);
+
     for (unsigned i = 0; i < nsections; i++, sec += 40) {
         uint32_t vaddr  = rd32le(sec + 12);
         uint32_t rsize  = rd32le(sec + 16);
         uint32_t roff   = rd32le(sec + 20);
         if (!rsize || roff + rsize > (uint32_t)len) continue;   /* .bss: already zero */
         memcpy((void *)(uintptr_t)(g_base + vaddr), img + roff, rsize);
+        /* Remember the executable one, so a DLL that rewrites the game's code
+         * later can be caught doing it - see es3_guest_diff(). Code only: the
+         * game writes to its own data constantly and legitimately. */
+        if (rd32le(sec + 36) & 0x20000000u)      /* IMAGE_SCN_MEM_EXECUTE */
+            es3_guest_snapshot(g_base + vaddr, g_base + vaddr + rsize);
     }
     free(img);
 
@@ -745,6 +821,79 @@ void guest_patch_import(HleId id, uint32_t value)
 
 uint32_t guest_entry(void)      { return g_entry; }
 uint32_t guest_image_base(void) { return g_base; }
+/*
+ * What a loaded DLL did to the game's code.
+ *
+ * These game trees ship an I/O emulator - JVSEmuMK.dll here - and the patched
+ * builds load it from a stub spliced onto the entry point. It imports nothing
+ * but GetProcAddress and VirtualProtect, which is the shape of something that
+ * rewrites code in memory, and what it rewrites is the GAME's own routines:
+ * the serial I/O layer is replaced in place by one that reads a gamepad.
+ *
+ * A static recompilation cannot be patched that way and never notices. The
+ * lifted C was compiled from the original bytes and is what actually runs; the
+ * guest image is data. So the DLL loads, patches nothing that matters, and the
+ * game goes on talking to a serial port that is not there.
+ *
+ * That is a dead end for running the emulator as-is, and a very good source of
+ * information: the addresses it patches are exactly the routines the cabinet's
+ * own authors considered the I/O interface. Snapshot the code at load, diff it
+ * after, and the report names them.
+ *
+ * Code only. The guest writes to its own .data constantly and legitimately.
+ */
+static unsigned char *g_code_copy;
+static uint32_t g_code_lo, g_code_hi;
+
+void es3_guest_snapshot(uint32_t lo, uint32_t hi)
+{
+    if (g_code_copy || hi <= lo) return;
+    g_code_copy = (unsigned char *)malloc(hi - lo);
+    if (!g_code_copy) return;
+    g_code_lo = lo;
+    g_code_hi = hi;
+    memcpy(g_code_copy, (const void *)(uintptr_t)lo, hi - lo);
+}
+
+void es3_guest_diff(const char *when)
+{
+    const unsigned char *now = (const unsigned char *)(uintptr_t)g_code_lo;
+    uint32_t i, n = g_code_hi - g_code_lo;
+    unsigned runs = 0;
+
+    if (!g_code_copy) return;
+    for (i = 0; i < n; i++) {
+        if (now[i] == g_code_copy[i]) continue;
+        {
+            uint32_t s = i, k;
+            while (i < n && now[i] != g_code_copy[i]) i++;
+            if (!runs++)
+                fprintf(stderr, "\n[patch] %s rewrote the game's code:\n", when);
+            fprintf(stderr, "  %08X  %u byte(s)\n    was:", g_code_lo + s, i - s);
+            for (k = s; k < i && k < s + 16; k++)
+                fprintf(stderr, " %02X", g_code_copy[k]);
+            fprintf(stderr, "\n    now:");
+            for (k = s; k < i && k < s + 16; k++) fprintf(stderr, " %02X", now[k]);
+            fprintf(stderr, "\n");
+            /* Refresh, so a second diff reports only what is new. */
+            memcpy(g_code_copy + s, now + s, i - s);
+            if (runs > 40) {
+                fprintf(stderr, "  ...stopping after 40\n");
+                break;
+            }
+        }
+    }
+    if (runs)
+        fprintf(stderr, "  %u patched range(s). Lifted code runs from the "
+                        "ORIGINAL bytes, so none of this has any effect - but "
+                        "the addresses\n  are what the cabinet's own authors "
+                        "treated as the I/O interface, which is worth knowing.\n\n",
+                runs);
+    else if (when)
+        fprintf(stderr, "[patch] %s changed no guest code.\n", when);
+    fflush(stderr);
+}
+
 uint32_t guest_image_size(void) { return g_image_size; }
 
 void guest_init_cpu(CPU *c)
