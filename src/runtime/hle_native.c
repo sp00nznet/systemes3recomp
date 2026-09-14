@@ -141,9 +141,26 @@ void hle_call_address(CPU *c, uint32_t target)
 
 static void native_thunk(CPU *c, HleId id) { hle_call_native(c, id); }
 
+/* The first call to each import, in order, when ES3_TRACE_IMPORTS is set.
+ *
+ * The dispatch trail says what guest code did; this says what it asked the
+ * world for, which is a different and often more useful question. A game that
+ * is alive but showing nothing has usually stopped somewhere identifiable in
+ * that sequence - it got as far as CreateWindowExW and not Direct3DCreate9,
+ * say - and the blocked thread itself is invisible, because a thread waiting
+ * inside real Win32 code dispatches nothing. */
+static unsigned char g_first[HLE_COUNT];
+static int g_trace = -1;
+
 void hle_call_native(CPU *c, HleId id)
 {
     hybrid_regs r;
+
+    if (g_trace < 0) g_trace = getenv("ES3_TRACE_IMPORTS") != NULL;
+    if (g_trace && !g_first[id]) {
+        g_first[id] = 1;
+        fprintf(stderr, "[import] %s (%s)\n", hle_name(id), hle_dll(id));
+    }
     int n = g_fpu_args[id];
     int depth_before;
 
