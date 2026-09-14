@@ -306,7 +306,7 @@ static void hle_set_window_long(CPU *c, HleId id)
  * address space is cheap for a reservation, and a stack is reserved, not
  * committed.
  */
-#define THREAD_STACK_FLOOR (8u << 20)
+#define THREAD_STACK_SIZE (8u << 20)
 
 /*
  * Keep the game in a window, and keep it there.
@@ -389,16 +389,16 @@ static void hle_thread_exit(CPU *c, HleId id)
 static void hle_create_thread(CPU *c, HleId id)
 {
     uint32_t want = A32(1);
-    if (want && want < THREAD_STACK_FLOOR) {
+    if (want != THREAD_STACK_SIZE) {
         static unsigned char said;
         if (!said) {
             said = 1;
             fprintf(stderr, "[hle] the guest asks for %u KB thread stacks; "
-                            "giving them %u MB, because lifted code carries the "
-                            "whole call graph on the real one\n",
-                    want >> 10, THREAD_STACK_FLOOR >> 20);
+                            "giving every one of them %u MB
+",
+                    want >> 10, THREAD_STACK_SIZE >> 20);
         }
-        wr32(c->esp + 4 + 4, THREAD_STACK_FLOOR);
+        wr32(c->esp + 4 + 4, THREAD_STACK_SIZE);
     }
     wrap_callback_arg(c, id, 2);
 }

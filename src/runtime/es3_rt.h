@@ -273,6 +273,28 @@ int dispatch_has(uint32_t va);
 /* Build the address-indexed dispatch table. Call once before the guest runs. */
 void dispatch_build_index(void);
 
+/*
+ * A direct call, made directly.
+ *
+ * `call 0x41eaa0` in the original has a target known at build time, and if
+ * that target is one of the functions we lifted then everything dispatch()
+ * does for it is waste: the import-sentinel range check, the thunk-address
+ * check, the table lookup and an indirect call, on the way to a C function
+ * whose name the generator already knew.
+ *
+ * It is not a small waste. `0041EAA0` is `fabsf` - two instructions - and a
+ * sampled window of Mario Kart had it called ninety-seven thousand times, at
+ * about four hundred nanoseconds each. The game was spending most of its life
+ * deciding where to go.
+ *
+ * The trail entry stays, because "how did it get here" is most of what this
+ * runtime is for and two stores is not what was costing anything.
+ *
+ * Indirect calls - a vtable slot, a task table, anything computed - still go
+ * through dispatch(), which is the whole reason it exists.
+ */
+#define DCALL(va, fn) do { es3_note_dispatch(va); fn(c); } while (0)
+
 /* The guest function whose lifted body contains a host address - what a fault
  * in two million lines of generated C needs to be legible. */
 uint32_t dispatch_owner(const void *host);

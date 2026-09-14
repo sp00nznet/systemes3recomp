@@ -86,21 +86,25 @@ function(es3_runtime target generated_dir)
     # dispatcher on top of whatever recursion the game's call graph produces,
     # so give it room - and then more room than that.
     #
-    # 16 MB, and that is a compromise rather than a choice. Lifted code is far
-    # heavier on the real stack than the code it stands for - one C function
-    # per guest function, a dispatch() frame between each pair, a local for
-    # every emulated temporary - and Mario Kart overflows it after about four
-    # minutes of loading, reported as C00000FD on a thread that then cannot
-    # handle its own overflow.
+    # 256 MB, and only for this thread.
     #
-    # Raising it does not fix that, because a stack is a RESERVATION and this
-    # game has twenty-nine threads: 64 MB each ran the address space out inside
-    # fifteen seconds, and 32 MB moved the failure somewhere else again. The
-    # real answer is for lifted code to use less real stack per guest frame,
-    # not for every thread to reserve more. Measured, both ways, before
-    # settling back here.
+    # Lifted code is far heavier on the real stack than the code it stands for
+    # - one C function per guest function, a dispatch() frame between each
+    # pair, a local for every emulated temporary - and Mario Kart overflows
+    # 16 MB after about four minutes of loading, reported as C00000FD on a
+    # thread that then cannot handle its own overflow.
+    #
+    # Raising /STACK alone does not fix it, because /STACK is the default for
+    # EVERY thread and this game makes twenty-nine: 64 MB each ran the address
+    # space out inside fifteen seconds. So the two are set separately. The
+    # primary thread, which runs the deep call graph, gets a quarter of a
+    # gigabyte here; the guest's own threads are given a fixed 8 MB in
+    # hle_create_thread, which is where their size is decided anyway.
+    #
+    # All of it is reservation, committed by Windows on demand - which is what
+    # /LARGEADDRESSAWARE below pays for.
     target_link_options(${target} PRIVATE
-        /DYNAMICBASE:NO /SAFESEH:NO /STACK:16777216)
+        /DYNAMICBASE:NO /SAFESEH:NO /STACK:268435456)
     # /BASE has to go through LINK_FLAGS and not target_link_options: the
     # Visual Studio generator maps the other three onto MSBuild properties and
     # silently DROPS anything it has no property for, so /BASE never reached
