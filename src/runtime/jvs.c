@@ -563,6 +563,38 @@ uint32_t es3_jvs_open(const char *name)
           (p[2] == 'M' || p[2] == 'm') && p[3] >= '0' && p[3] <= '9'))
         return 0;
 
+    /*
+     * One port, not every port.
+     *
+     * A cabinet has several serial devices and this file only knows one
+     * protocol. Mario Kart opens COM1 for the JVS I/O and COM2 or COM4 for the
+     * IC card reader (0x005BD830 picks between them by name), and answering
+     * the card reader in JVS is worse than not answering it at all: it opens,
+     * it talks, and it gets replies that mean nothing, which the game reports
+     * as -301 and turns into E07-11 - an error whose entry in the mode table
+     * suppresses the frame loop's task tick, so the game then draws nothing at
+     * all.
+     *
+     * So claim the JVS port and leave the rest to Windows, where a port that
+     * is not there fails to open and the game is told so honestly.
+     * ES3_JVS_PORT moves it, for a cabinet wired differently.
+     */
+    {
+        const char *want = getenv("ES3_JVS_PORT");
+        int n = p[3] - '0';
+        if (p[4] >= '0' && p[4] <= '9') n = n * 10 + (p[4] - '0');
+        if (n != (want ? atoi(want) : 1)) {
+            static int said;
+            if (!said) {
+                said = 1;
+                fprintf(stderr, "[jvs] the game opened %s as well; leaving that "
+                                "one to Windows - it is not the JVS board "
+                                "(ES3_JVS_PORT to say which is).\n", name);
+            }
+            return 0;
+        }
+    }
+
     if (!g_ready) {
         InitializeCriticalSection(&g_port.lock);
         /* A real kernel object, so CloseHandle and every wait the game might

@@ -215,6 +215,24 @@ static void serve(SOCKET s)
         fprintf(stderr, "[allnet] request:\n%s\n", req);
     }
 
+    /* Every distinct path once, without ES3_TRACE_NET.
+     *
+     * Which calls the game makes is the whole question when its client rejects
+     * an answer, and the trace that used to be the only way to see them binds
+     * four more imports - with which this boot stalls early and reproducibly
+     * around the I/O board. This costs one strcmp on a listener thread that is
+     * ours, and it works on the run that actually boots. */
+    {
+        static char seen[16][128];
+        static int nseen;
+        int i;
+        for (i = 0; i < nseen && strcmp(seen[i], path); i++) {}
+        if (i == nseen && nseen < 16) {
+            strncpy_s(seen[nseen++], sizeof seen[0], path, _TRUNCATE);
+            fprintf(stderr, "[allnet] asked for %s\n", path);
+        }
+    }
+
     blen = reply_body(body, sizeof body, path);
     hlen = sprintf_s(out, sizeof out,
                      "HTTP/1.1 200 OK\r\n"
