@@ -397,6 +397,8 @@ void es3_apply_pokes(void);
 void es3_report_peeks(void);
 /* ES3_WATCH_MEM - a debug register on a guest address. */
 void es3_watch_mem_tick(void);
+/* Name whoever calls ExitProcess, including from inside a forwarded DLL. */
+void es3_watch_exit(void);
 /* Capture the next presented frame, whenever it comes. */
 void es3_shot_now(void);
 

@@ -557,6 +557,13 @@ static int relaunch_reserving(uint32_t base, uint32_t size)
     ResumeThread(pi.hThread);
     WaitForSingleObject(pi.hProcess, INFINITE);
     GetExitCodeProcess(pi.hProcess, &code);
+    /* Which of the two processes ended, and with what. Without this line an
+     * exit code read from outside is ambiguous: this parent exits with the
+     * child's code, so a bare "exit code 6" says nothing about which half
+     * produced it. */
+    fprintf(stderr, "[relaunch] the child (pid %lu) exited with %lu\n",
+            pi.dwProcessId, (unsigned long)code);
+    fflush(stderr);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     exit((int)code);

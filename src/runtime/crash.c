@@ -901,6 +901,7 @@ void es3_install_crash_handler(void)
     g_thunk_lock_ready = 1;
     open_trail();
     AddVectoredExceptionHandler(1, es3_veh);
+    es3_watch_exit();
 }
 
 #else
@@ -1017,4 +1018,105 @@ int es3_watch_mem_hit(EXCEPTION_POINTERS *ep)
 }
 #else
 void es3_watch_mem_tick(void) {}
+#endif
+
+#ifdef _WIN32
+/*
+ * Who called ExitProcess, and with what.
+ *
+ * The TLS callback in the game's host.c names the thread at
+ * DLL_PROCESS_DETACH, and the import handlers catch every exit path the guest
+ * imports - exit, _exit, abort, TerminateProcess. Mario Kart's boot walks
+ * past all of them: it ends with code 6, silently, having logged nothing, and
+ * the dispatch trail's last entries are a worker thread going to sleep.
+ *
+ * That leaves a call into the real kernel32 from inside a forwarded library,
+ * which no IAT handler can see. So patch kernel32!ExitProcess itself. No
+ * trampoline is needed and none is written: ExitProcess does not return, so
+ * the replacement is free to say what it knows and end the process itself.
+ *
+ * Five bytes of `jmp rel32`, which is the whole hook on x86. If the first
+ * instruction is not at least five bytes this would corrupt the second one -
+ * it is `mov edi, edi; push ebp; mov ebp, esp` on every Windows this runs on,
+ * which is seven, and the code checks anyway.
+ */
+/* The raw syscall stub, which nothing here patches - both replacements end
+ * through it so they cannot call back into each other. */
+static LONG (WINAPI *g_nt_terminate)(HANDLE, LONG);
+
+static void WINAPI es3_exit_process(UINT code)
+{
+    void *from = _ReturnAddress();
+    int ours = 0;
+    uint32_t base = 0;
+    const char *mod = module_at((uint32_t)(uintptr_t)from, &ours, &base);
+
+    fprintf(stderr, "\n[exit] ExitProcess(%u) from %p", code, from);
+    if (mod) fprintf(stderr, ", in %s+0x%X", mod, (unsigned)((uint32_t)(uintptr_t)from - base));
+    if (ours)
+        fprintf(stderr, " - lifted %08X",
+                dispatch_owner(from));
+    fprintf(stderr, " (thread %lu, dispatch %u)\n",
+            GetCurrentThreadId(), es3_dispatch_count());
+    es3_report_state("who ended it");
+    fflush(stderr);
+    g_nt_terminate(GetCurrentProcess(), (LONG)code);
+    for (;;) { }                      /* not reached; keeps the compiler calm */
+}
+
+static BOOL WINAPI es3_terminate_process(HANDLE proc, UINT code)
+{
+    void *from = _ReturnAddress();
+    int ours = 0;
+    uint32_t base = 0;
+    const char *mod = module_at((uint32_t)(uintptr_t)from, &ours, &base);
+
+    fprintf(stderr, "\n[exit] TerminateProcess(%p, %u) from %p",
+            (void *)proc, code, from);
+    if (mod) fprintf(stderr, ", in %s+0x%X", mod,
+                     (unsigned)((uint32_t)(uintptr_t)from - base));
+    if (ours) fprintf(stderr, " - lifted %08X", dispatch_owner(from));
+    fprintf(stderr, " (thread %lu, dispatch %u)\n",
+            GetCurrentThreadId(), es3_dispatch_count());
+    if (proc == GetCurrentProcess()) es3_report_state("who ended it");
+    fflush(stderr);
+    return g_nt_terminate(proc, (LONG)code) >= 0;
+}
+
+void es3_watch_exit(void)
+{
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    unsigned char *p;
+    DWORD old;
+    intptr_t rel;
+
+    if (!k32 || getenv("ES3_NO_EXIT_HOOK")) return;
+    p = (unsigned char *)GetProcAddress(k32, "ExitProcess");
+    g_nt_terminate = (LONG (WINAPI *)(HANDLE, LONG))
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtTerminateProcess");
+    if (!p || !g_nt_terminate) return;
+    if (!VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    rel = (intptr_t)es3_exit_process - (intptr_t)(p + 5);
+    p[0] = 0xE9;
+    memcpy(p + 1, &rel, 4);
+    VirtualProtect(p, 5, old, &old);
+    /* And TerminateProcess, which is the other way out and the one a watchdog
+     * reaches for. This boot leaves through neither `exit` nor
+     * `TerminateProcess` as the GUEST imports them - both are bound to
+     * hle_give_up and both stay quiet - and not through kernel32!ExitProcess
+     * either, so the call is coming from a forwarded library and this is the
+     * remaining door. */
+    p = (unsigned char *)GetProcAddress(k32, "TerminateProcess");
+    if (p && VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        rel = (intptr_t)es3_terminate_process - (intptr_t)(p + 5);
+        p[0] = 0xE9;
+        memcpy(p + 1, &rel, 4);
+        VirtualProtect(p, 5, old, &old);
+    }
+
+    fprintf(stderr, "[exit] watching ExitProcess and TerminateProcess "
+                    "(ES3_NO_EXIT_HOOK to leave them alone)\n");
+}
+#else
+void es3_watch_exit(void) {}
 #endif
