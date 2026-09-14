@@ -242,6 +242,55 @@ static void force_windowed(CPU *c, uint32_t target)
     }
 }
 
+/*
+ * ES3_TRACE_HOSTCALLS: every real function the guest calls that is not an
+ * import, once each.
+ *
+ * Imports are named and traceable; a COM method is not. The game gets
+ * Direct3D 10 and DXGI through LoadLibrary and GetProcAddress, and everything
+ * it then does with them - create the swap chain, set state, draw, present -
+ * is a vtable slot. dispatch() recognises those as host code and sends them
+ * here, which makes this the one place the whole renderer is visible.
+ *
+ * That settles the question a black window asks. "d3d10.dll+0x1a2b0, once" is
+ * a device that was created and never used; the same line arriving every frame
+ * is a game that is drawing and the problem is elsewhere.
+ *
+ * Direct-mapped and lossy on purpose: one load per call to decide whether this
+ * address has been seen, and a collision costs a duplicate line, not a wrong
+ * answer.
+ */
+static int g_trace_host = -1;
+static uint32_t g_host_seen[4096];
+
+static void note_host_call(uint32_t target)
+{
+    unsigned slot;
+    MEMORY_BASIC_INFORMATION mi;
+    wchar_t w[MAX_PATH];
+    const wchar_t *leaf;
+    char name[64];
+
+    if (g_trace_host < 0) g_trace_host = getenv("ES3_TRACE_HOSTCALLS") != NULL;
+    if (!g_trace_host) return;
+
+    slot = (target >> 2) & 4095u;
+    if (g_host_seen[slot] == target) return;
+    g_host_seen[slot] = target;
+
+    if (!VirtualQuery((LPCVOID)(uintptr_t)target, &mi, sizeof mi) ||
+        mi.Type != MEM_IMAGE ||
+        !GetModuleFileNameW((HMODULE)mi.AllocationBase, w, MAX_PATH)) {
+        fprintf(stderr, "[hostcall] %08X (not in a module)\n", target);
+        return;
+    }
+    leaf = wcsrchr(w, L'\\');
+    WideCharToMultiByte(CP_ACP, 0, leaf ? leaf + 1 : w, -1,
+                        name, sizeof name, NULL, NULL);
+    fprintf(stderr, "[hostcall] %s+0x%X\n", name,
+            target - (uint32_t)(uintptr_t)mi.AllocationBase);
+}
+
 void hle_call_address(CPU *c, uint32_t target)
 {
     hybrid_regs r;
@@ -251,6 +300,7 @@ void hle_call_address(CPU *c, uint32_t target)
 
     force_windowed(c, target);
     note_device_call(target);
+    note_host_call(target);
 
     hybrid_call_machine(&r, target);
 
@@ -414,6 +464,26 @@ void hle_call_native(CPU *c, HleId id)
         c->fpu_top = (c->fpu_top + n) & 7;      /* the guest's copies are consumed */
     }
     depth_before = hybrid_fpu_depth() - n;
+
+    /*
+     * Re-state the stack bounds, here, every time.
+     *
+     * es3_teb_cover() writes NT_TIB.StackLimit so that a handler registered
+     * from the guest's stack validates - and StackLimit is not ours to keep.
+     * The kernel owns it: it moves it down on a guard-page hit and back up
+     * when a stack is trimmed, so a cover applied once at a thread's first
+     * crossing is undone later by something that has nothing to do with us.
+     * The symptom is silent and total. OutputDebugString raises 0x40010006
+     * and catches it in its own __try; with the bounds reset, no frame on the
+     * guest stack is eligible, nobody catches it, and the process ends with
+     * 40010006 for an exit code and a log that simply stops.
+     *
+     * This is the moment it matters - a forwarded import is exactly where real
+     * code runs on the guest's stack and registers a handler on it - so the
+     * cover is reapplied rather than remembered. Two reads and usually no
+     * write, against a call that is about to cross into a DLL.
+     */
+    es3_teb_cover(c->esp - (64u << 10), c->esp + 0x1000u);
 
     r.eax = c->eax; r.ecx = c->ecx; r.edx = c->edx; r.ebx = c->ebx;
     r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;

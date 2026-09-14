@@ -29,6 +29,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #endif
 
 #include "es3_rt.h"
@@ -165,6 +166,13 @@ static void open_trail(void)
 
 void es3_watch_cpu(const CPU *c) { g_cpu = c; }
 
+/* The thread that ran main(), so a thread report can say which one it is. */
+static unsigned long g_main_tid;
+
+/* And the thread the guest's own call graph runs on - es3_enter_guest()
+ * makes it, and it is the one a thread report is actually about. */
+unsigned long g_guest_tid;
+
 static const char *region_of(uint32_t va)
 {
     uint32_t base = guest_image_base();
@@ -216,6 +224,132 @@ void es3_report_memory(void)
             (unsigned)(freeb >> 20), (unsigned)(biggest_free >> 20));
 #endif
 }
+
+/*
+ * Where every thread actually is, right now.
+ *
+ * The dispatch trail answers "what did guest code do", and for a game that has
+ * stopped drawing that is the wrong question. A thread blocked inside real
+ * Win32 - waiting on a message, on a semaphore, on a device that is not
+ * plugged into this PC - dispatches nothing at all, so it does not appear in
+ * the trail even once, and in a recompiled arcade title it is usually the
+ * thread that matters. Mario Kart's primary thread is invisible for exactly
+ * this reason while twenty worker threads poll Sleep(100) around it.
+ *
+ * Suspend each thread, read its Eip, name what it is in. An Eip inside this
+ * runtime's own image means lifted code, and then the guest function is the
+ * interesting half of the answer, so dispatch_owner() names that too.
+ *
+ * ES3_STALL=<seconds> prints it on that period, which is what a game that is
+ * alive and drawing nothing calls for.
+ */
+#ifdef _WIN32
+static const char *module_at(uint32_t eip, int *ours)
+{
+    static char name[80];
+    static wchar_t w[MAX_PATH];
+    MEMORY_BASIC_INFORMATION mi;
+    const wchar_t *leaf;
+
+    *ours = 0;
+    if (!VirtualQuery((LPCVOID)(uintptr_t)eip, &mi, sizeof mi)) return "?";
+    if (mi.Type != MEM_IMAGE)
+        return mi.State == MEM_COMMIT ? "private code" : "unmapped";
+    if (mi.AllocationBase == (void *)GetModuleHandleW(NULL)) *ours = 1;
+    if (!GetModuleFileNameW((HMODULE)mi.AllocationBase, w, MAX_PATH))
+        return "an image";
+    leaf = wcsrchr(w, L'\\');
+    WideCharToMultiByte(CP_ACP, 0, leaf ? leaf + 1 : w, -1,
+                        name, sizeof name, NULL, NULL);
+    return name;
+}
+
+/* The last thing a given thread asked for, from the ring.
+ *
+ * A thread parked in ntdll is waiting, and "ntdll.dll" is the same answer for
+ * every one of them. What separates them is the guest call they were in when
+ * they went to sleep, and the trail has it - so walk backwards to this
+ * thread's most recent entry. Bounded by the ring: a thread that has not
+ * dispatched in a million calls has nothing to say anyway.
+ */
+static uint32_t last_va_on(unsigned long tid, uint32_t *import_va)
+{
+    unsigned total = RING_COUNT, i, n = total < TRAIL ? total : TRAIL;
+    *import_va = 0;
+    for (i = 0; i < n; i++) {
+        unsigned k = total - 1 - i;
+        if (RING_TID(k) != (uint32_t)tid) continue;
+        if (HLE_IS_ADDR(RING_VA(k))) {
+            if (!*import_va) *import_va = RING_VA(k);
+            continue;
+        }
+        return RING_VA(k);
+    }
+    return 0;
+}
+
+void es3_report_threads(void)
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    THREADENTRY32 te;
+    DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    unsigned n = 0;
+    BOOL ok;
+
+    if (snap == INVALID_HANDLE_VALUE) return;
+    te.dwSize = sizeof te;
+    fprintf(stderr, "\n=== where every thread is, %u dispatches in ===\n",
+            es3_dispatch_count());
+    for (ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        HANDLE h;
+        CONTEXT ctx;
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == me) continue;
+        h = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE,
+                       te.th32ThreadID);
+        if (!h) continue;
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (SuspendThread(h) != (DWORD)-1) {
+            if (GetThreadContext(h, &ctx)) {
+                int ours = 0;
+                const char *mod = module_at((uint32_t)ctx.Eip, &ours);
+                n++;
+                /* Resume before printing: fprintf takes a lock the suspended
+                 * thread may be holding, and deadlocking the diagnostic is a
+                 * poor way to diagnose a hang. */
+                ResumeThread(h);
+                CloseHandle(h);
+                {
+                    uint32_t imp = 0, last = last_va_on(te.th32ThreadID, &imp);
+                    const char *tag =
+                        te.th32ThreadID == g_guest_tid ? "  <- the guest" :
+                        te.th32ThreadID == g_main_tid  ? "  <- host main" : "";
+                    if (ours)
+                        fprintf(stderr, "  t%-6lu running   lifted %08X%s\n",
+                                te.th32ThreadID,
+                                dispatch_owner((const void *)(uintptr_t)ctx.Eip),
+                                tag);
+                    else if (imp)
+                        fprintf(stderr, "  t%-6lu in %-11s waiting in %s, "
+                                        "last guest %08X%s\n",
+                                te.th32ThreadID, mod,
+                                hle_name(HLE_ID_OF(imp)), last, tag);
+                    else
+                        fprintf(stderr, "  t%-6lu in %-11s last guest %08X%s\n",
+                                te.th32ThreadID, mod, last, tag);
+                }
+                continue;
+            }
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    fprintf(stderr, "  %u thread(s)\n", n);
+    fflush(stderr);
+}
+#else
+void es3_report_threads(void) {}
+#endif
 
 void es3_report_state(const char *why)
 {
@@ -384,6 +518,47 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
          * is still the guest's to catch. */
         if (r->ExceptionCode == 0x406D1388u) return EXCEPTION_CONTINUE_EXECUTION;
 
+        /*
+         * The one exception that has to be caught, checked where it is raised.
+         *
+         * OutputDebugString raises 0x40010006 and catches it in its own __try,
+         * and Windows only offers a handler the frame it is registered from
+         * lies between this thread's StackLimit and StackBase. Lifted code does
+         * not run on the stack the TEB describes, so es3_teb_cover() widens the
+         * bounds on every thread that crosses into it - and a thread that was
+         * missed does not fail visibly. It raises, nobody is eligible, and the
+         * process ends with 0x40010006 as its exit code and nothing in the log.
+         *
+         * So say it here, where both halves are in hand. Once per thread.
+         */
+        if (r->ExceptionCode == 0x40010006u) {
+            uint32_t lo = __readfsdword(0x08), hi = __readfsdword(0x04);
+            uint32_t sp = ep->ContextRecord->Esp;
+            if (sp < lo || sp >= hi) {
+                static volatile LONG told[16];
+                LONG self = (LONG)GetCurrentThreadId();
+                int k;
+                for (k = 0; k < 16; k++) {
+                    if (told[k] == self) break;
+                    if (!told[k] &&
+                        InterlockedCompareExchange(&told[k], self, 0) == 0) {
+                        fprintf(stderr,
+                            "\n[seh] thread %lu raised OutputDebugString's "
+                            "exception with esp=%08X, and its TEB says the "
+                            "stack is %08X..%08X.\n"
+                            "      No handler on it can be eligible, so this "
+                            "one goes unhandled and ends the process with "
+                            "exit code 40010006.\n"
+                            "      Something entered lifted code on this thread "
+                            "without es3_teb_cover().\n",
+                            GetCurrentThreadId(), sp, lo, hi);
+                        fflush(stderr);
+                        break;
+                    }
+                }
+            }
+        }
+
         static volatile LONG said[8];
         int i;
         for (i = 0; i < 8; i++) {
@@ -496,6 +671,7 @@ void es3_install_crash_handler(void)
     static int done;
     if (done) return;
     done = 1;
+    g_main_tid = GetCurrentThreadId();
     es3_trail_init();
     dispatch_build_index();
     es3_stack_trace_init();

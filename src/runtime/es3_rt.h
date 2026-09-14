@@ -71,6 +71,7 @@ void es3_window_selftest(void);
  * windowed forcing, which depends on recognising calls; this depends on
  * nothing. See guest.c. */
 void es3_start_screen_watchdog(void);
+void es3_enter_guest(CPU *c);
 
 /* ---- the import boundary ----
  *
@@ -338,6 +339,7 @@ void es3_watch_cpu(const CPU *c);
 /* Print the simulated machine's state. The handler calls it; so can a shim
  * that has noticed something impossible. */
 void es3_report_state(const char *why);
+void es3_report_threads(void);
 
 /* Called by dispatch() on every guest call, to keep the trail. */
 void es3_note_dispatch(uint32_t va);

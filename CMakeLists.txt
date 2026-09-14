@@ -82,29 +82,37 @@ function(es3_runtime target generated_dir)
     # run and would sometimes be moved back over the low addresses. None of
     # these titles set DYNAMIC_BASE either, which is why nothing relocates.
     #
-    # The guest gets its own 8 MB stack, but the host thread runs the
-    # dispatcher on top of whatever recursion the game's call graph produces,
-    # so give it room - and then more room than that.
-    #
-    # 256 MB, and only for this thread.
+    # /STACK is the reservation for EVERY thread in the process, so it is the
+    # wrong place to ask for a big one.
     #
     # Lifted code is far heavier on the real stack than the code it stands for
     # - one C function per guest function, a dispatch() frame between each
-    # pair, a local for every emulated temporary - and Mario Kart overflows
-    # 16 MB after about four minutes of loading, reported as C00000FD on a
-    # thread that then cannot handle its own overflow.
+    # pair, a local for every emulated temporary - and the thread carrying the
+    # game's call graph overflows 16 MB after about four minutes of loading,
+    # reported as C00000FD on a thread that then cannot handle its own
+    # overflow. It wants a quarter of a gigabyte. But raising /STACK to get it
+    # hands the same quarter-gigabyte to every thread anybody starts, and the
+    # ones nobody here starts are the problem: Direct3D, DirectInput, Media
+    # Foundation and COM make four between them, which is a gigabyte of a
+    # two-gigabyte address space gone before the game has loaded a texture.
+    # That arrives as operator new throwing bad_alloc about a minute in.
     #
-    # Raising /STACK alone does not fix it, because /STACK is the default for
-    # EVERY thread and this game makes twenty-nine: 64 MB each ran the address
-    # space out inside fifteen seconds. So the two are set separately. The
-    # primary thread, which runs the deep call graph, gets a quarter of a
-    # gigabyte here; the guest's own threads are given a fixed 8 MB in
-    # hle_create_thread, which is where their size is decided anyway.
+    # So the sizes are asked for one at a time, where each is decided:
+    #   - the guest's call graph      es3_enter_guest(), 256 MB
+    #   - the guest's own threads     hle_create_thread(), 8 MB
+    #   - a library's own threads     this, 16 MB
+    # and both of the first two pass STACK_SIZE_PARAM_IS_A_RESERVATION, without
+    # which dwStackSize only says how much to COMMIT and the reservation comes
+    # back here again.
+    #
+    # 16 MB is not arbitrary: D3DX10's thread pump calls back into lifted code,
+    # so a library thread runs the same heavy frames and the default megabyte
+    # is not enough for it.
     #
     # All of it is reservation, committed by Windows on demand - which is what
     # /LARGEADDRESSAWARE below pays for.
     target_link_options(${target} PRIVATE
-        /DYNAMICBASE:NO /SAFESEH:NO /STACK:268435456)
+        /DYNAMICBASE:NO /SAFESEH:NO /STACK:16777216)
     # /BASE has to go through LINK_FLAGS and not target_link_options: the
     # Visual Studio generator maps the other three onto MSBuild properties and
     # silently DROPS anything it has no property for, so /BASE never reached

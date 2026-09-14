@@ -133,11 +133,17 @@ void es3_teb_cover(uint32_t lo, uint32_t hi)
 static DWORD WINAPI screen_watchdog(void *unused)
 {
     int cx = GetSystemMetrics(SM_CXSCREEN), cy = GetSystemMetrics(SM_CYSCREEN);
-    unsigned caught = 0;
+    unsigned caught = 0, ticks = 0;
+    /* ES3_STALL=<seconds>: how often to say where every thread is. This thread
+     * already exists and already wakes ten times a second, so the periodic
+     * report rides on it rather than starting a second one. */
+    const char *stall = getenv("ES3_STALL");
+    unsigned period = stall ? (unsigned)atoi(stall) * 10u : 0;
     (void)unused;
     for (;;) {
         HWND h = NULL;
         Sleep(100);
+        if (period && ++ticks % period == 0) es3_report_threads();
         while ((h = FindWindowExA(NULL, h, NULL, NULL)) != NULL) {
             DWORD pid = 0;
             RECT r;
@@ -181,6 +187,66 @@ void es3_start_screen_watchdog(void)
     if (getenv("ES3_FULLSCREEN")) return;
     t = CreateThread(NULL, 0, screen_watchdog, NULL, 0, NULL);
     if (t) CloseHandle(t);
+}
+
+/*
+ * The guest runs on a thread of our own, with a stack sized for it.
+ *
+ * Lifted code is far heavier on the real stack than the code it stands for -
+ * one C function per guest function, a dispatch() frame between each pair, a
+ * local for every emulated temporary - so the thread that carries the game's
+ * call graph needs hundreds of megabytes where the original needed one.
+ *
+ * The obvious way to get that is /STACK, and /STACK is the wrong knob: it is
+ * the reservation for EVERY thread in the process, including the ones real
+ * libraries make for themselves. Direct3D, DirectInput, Media Foundation and
+ * COM between them start four, and at a quarter of a gigabyte each that is a
+ * gigabyte of a two-gigabyte address space gone before the game has loaded a
+ * texture - which arrives, eventually, as operator new throwing bad_alloc.
+ *
+ * So /STACK stays modest, which is all a library thread needs even when it
+ * calls back into lifted code, and the deep one is asked for here by name.
+ * STACK_SIZE_PARAM_IS_A_RESERVATION is the whole point of the call:
+ * without it dwStackSize only says how much to COMMIT and the reservation
+ * comes from /STACK again.
+ */
+#define ES3_GUEST_STACK (256u << 20)
+
+static uint32_t g_guest_stack_lo;
+extern unsigned long g_guest_tid;   /* crash.c, for the thread report */
+
+static CPU *g_entry_cpu;
+
+static DWORD WINAPI guest_thread(void *unused)
+{
+    (void)unused;
+    /* This thread's own TEB, not the one guest_init_cpu covered. Without it
+     * the guest's first __try is rejected by RtlDispatchException and the run
+     * ends on the first OutputDebugString - which is what it did. */
+    g_guest_tid = GetCurrentThreadId();
+    es3_teb_cover(g_guest_stack_lo, g_guest_stack_lo + STACK_SZ);
+    dispatch(g_entry_cpu, guest_entry());
+    return 0;
+}
+
+void es3_enter_guest(CPU *c)
+{
+    HANDLE t;
+    g_entry_cpu = c;
+    t = CreateThread(NULL, ES3_GUEST_STACK, guest_thread, NULL,
+                     0x00010000u /* STACK_SIZE_PARAM_IS_A_RESERVATION */, NULL);
+    if (!t) {
+        fprintf(stderr, "[host] no room for a %u MB guest stack (error %lu); "
+                        "running on this thread instead\n",
+                ES3_GUEST_STACK >> 20, GetLastError());
+        guest_thread(NULL);
+        return;
+    }
+    /* The guest's exit path is ExitProcess, so this wait does not normally
+     * end. It is here for the case where the entry point returns, which
+     * mainCRTStartup does not do and host.c reports if it ever does. */
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
 }
 
 void es3_window_selftest(void)
@@ -445,6 +511,9 @@ int guest_load(const char *exe_path)
     g_stack_pointer &= ~0xFu;
 
 #ifdef _WIN32
+    /* And remember it, because the thread that ends up RUNNING the guest is
+     * not this one - see es3_enter_guest() - and a TEB is per thread. */
+    g_guest_stack_lo = stack_lo;
     es3_teb_cover(stack_lo, stack_lo + STACK_SZ);
 #endif
 #if 0

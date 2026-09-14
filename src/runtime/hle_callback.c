@@ -389,17 +389,29 @@ static void hle_thread_exit(CPU *c, HleId id)
 static void hle_create_thread(CPU *c, HleId id)
 {
     uint32_t want = A32(1);
-    if (want != THREAD_STACK_SIZE) {
-        static unsigned char said;
-        if (!said) {
-            said = 1;
-            fprintf(stderr, "[hle] the guest asks for %u KB thread stacks; "
-                            "giving every one of them %u MB
-",
-                    want >> 10, THREAD_STACK_SIZE >> 20);
-        }
-        wr32(c->esp + 4 + 4, THREAD_STACK_SIZE);
+    static unsigned char said;
+
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[hle] the guest asks for %u KB thread stacks; "
+                        "reserving %u MB for every one of them\n",
+                want >> 10, THREAD_STACK_SIZE >> 20);
     }
+    /*
+     * Both halves, or neither works.
+     *
+     * dwStackSize on its own is the size Windows COMMITS; what it reserves
+     * comes from the PE header, which is /STACK - and /STACK is a quarter of a
+     * gigabyte here because the primary thread runs the whole lifted call
+     * graph. Twenty-nine worker threads each reserving that is the whole
+     * address space, and the run ends inside a minute with bad_alloc.
+     *
+     * STACK_SIZE_PARAM_IS_A_RESERVATION is what makes argument 1 mean reserve.
+     * It is argument 4 of CreateThread (dwCreationFlags) and argument 4 of
+     * _beginthreadex (initflag), which forwards it, so one write serves both.
+     */
+    wr32(c->esp + 4 + 4 * 1, THREAD_STACK_SIZE);
+    wr32(c->esp + 4 + 4 * 4, A32(4) | 0x00010000u);
     wrap_callback_arg(c, id, 2);
 }
 
