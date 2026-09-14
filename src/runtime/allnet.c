@@ -300,6 +300,56 @@ void es3_hle_gethostbyname(CPU *c, HleId id)
     c->esp += 4 + 4 * 1;              /* __stdcall, one argument */
 }
 
+/*
+ * getaddrinfo(), which is the one this game actually uses.
+ *
+ * `gethostbyname` does not appear in Mario Kart's import table at all - the
+ * name is not in the executable - and the panel said `ERROR DNS TIMEOUT` and
+ * `ERROR TIP HOST NOTFOUND` for as long as that was the only resolver
+ * answered. Both errors come from the ALL.Net client, and it resolves through
+ * getaddrinfo.
+ *
+ * Rewriting the node argument rather than building an addrinfo chain, because
+ * the caller frees the result with the real freeaddrinfo: a chain of our own
+ * would be handed to a heap that never allocated it. The guest's address space
+ * is flat and 1:1, so a static host string is a valid guest pointer, and the
+ * real resolver does the rest.
+ */
+void es3_hle_getaddrinfo(CPU *c, HleId id)
+{
+    static char loopback[] = "127.0.0.1";
+    static char self[256];
+    static int said;
+
+    char asked[256];
+    const char *want = guest_str(A32(0), asked, sizeof asked);
+
+    if (!g_started) allnet_start();
+    if (!self[0] && gethostname(self, sizeof self) != 0) self[0] = 0;
+
+    /* The cabinet's own name goes to the real resolver, for the same reason it
+     * does in gethostbyname: a cabinet that believes it is on 127.0.0.1 fails
+     * its local network check instead of its DNS one. */
+    if (!want || _stricmp(want, self) == 0 || _stricmp(want, "localhost") == 0) {
+        if (g_trace && want)
+            fprintf(stderr, "[allnet] getaddrinfo '%s' is this machine - "
+                            "asking the real resolver\n", want);
+        hle_call_native(c, id);
+        return;
+    }
+
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[allnet] getaddrinfo '%s' -> 127.0.0.1 (ES3_NO_ALLNET "
+                        "to let the real resolver have it)\n", want);
+    } else if (g_trace) {
+        fprintf(stderr, "[allnet] getaddrinfo '%s' -> 127.0.0.1\n", want);
+    }
+
+    wr32(c->esp + 4u, (uint32_t)(uintptr_t)loopback);
+    hle_call_native(c, id);
+}
+
 /* connect() and send(), traced.
  *
  * gethostbyname() answering is only half an answer: the client is free to

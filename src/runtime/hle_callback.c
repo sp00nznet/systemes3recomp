@@ -881,6 +881,8 @@ void hle_register_callbacks(void)
     hle_bind("IpRenewAddress", hle_ip_renew);
     if (!getenv("ES3_NO_ALLNET"))
         hle_bind("gethostbyname", es3_hle_gethostbyname);
+    if (!getenv("ES3_NO_ALLNET"))
+        hle_bind("getaddrinfo", es3_hle_getaddrinfo);
     if (!getenv("ES3_NO_ALLNET")) {
         hle_bind("WSAIoctl", es3_hle_wsaioctl);
         hle_bind("WinHttpConnect", es3_hle_winhttp_connect);

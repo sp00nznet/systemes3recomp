@@ -154,6 +154,7 @@ void hle_call(CPU *c, HleId id);
 int hle_bind(const char *name, HleHandler fn);
 /* allnet.c - the authentication host, answered on loopback. */
 void es3_hle_gethostbyname(CPU *c, HleId id);
+void es3_hle_getaddrinfo(CPU *c, HleId id);
 void es3_hle_connect(CPU *c, HleId id);
 void es3_hle_send(CPU *c, HleId id);
 void es3_hle_winhttp_connect(CPU *c, HleId id);
