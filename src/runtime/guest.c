@@ -150,7 +150,10 @@ static DWORD WINAPI screen_watchdog(void *unused)
          * the game keeps overwriting, and a boot that races it takes a
          * different path on every run. */
         es3_apply_pokes();
-        if (period && ++ticks % period == 0) es3_report_threads();
+        if (period && ++ticks % period == 0) {
+            es3_report_peeks();
+            es3_report_threads();
+        }
         while ((h = FindWindowExA(NULL, h, NULL, NULL)) != NULL) {
             DWORD pid = 0;
             RECT r;

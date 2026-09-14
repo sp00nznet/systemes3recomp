@@ -389,6 +389,8 @@ void es3_report_threads(void);
 /* ES3_POKE, held down. The game writes its own value back, so this has
  * to run far more often than a thread report does - see the watchdog. */
 void es3_apply_pokes(void);
+/* ES3_PEEK, on the watchdog's own period. */
+void es3_report_peeks(void);
 
 /* An argument that is really a string - ASCII or UTF-16, NULL if it is
  * neither. Shared so a handler in hle_callback.c can print one too. */

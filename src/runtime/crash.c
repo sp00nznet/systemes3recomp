@@ -459,7 +459,11 @@ void es3_apply_pokes(void)
     }
 }
 
-static void report_peeks(void)
+/* Not folded into the thread report any more: suspending a hundred threads
+ * and naming each one takes long enough that the peeks rode a cadence of
+ * minutes, and a peek is wanted while the game is RUNNING, which is exactly
+ * when a stall report is not due. The watchdog calls this on its own. */
+void es3_report_peeks(void)
 {
     unsigned k, j, o;
     if (!g_peek_read) peek_init();
@@ -556,7 +560,6 @@ void es3_report_threads(void)
     CloseHandle(snap);
     fprintf(stderr, "  %u thread(s)\n", n);
     es3_apply_pokes();
-    report_peeks();
     fflush(stderr);
 }
 #else
