@@ -169,6 +169,15 @@ void guest_patch_import(HleId id, uint32_t value);
 /* Was this import resolved as data rather than a function? */
 int hle_is_data(HleId id);
 
+/* Is `va` executable memory outside the guest image - a real function the game
+ * got at run time rather than through the IAT? A COM interface is a vtable of
+ * these, and so is every GetProcAddress result. */
+int es3_is_host_code(uint32_t va);
+
+/* Run real code at `target` on the guest's own frame, through the same
+ * marshalling an import uses. */
+void hle_call_address(CPU *c, uint32_t target);
+
 /* Do the forwarding call for an import that hle_bind_native() resolved. A
  * handler that only needs to adjust an argument before the real function sees
  * it - swapping a guest callback pointer for a thunk, say - delegates here

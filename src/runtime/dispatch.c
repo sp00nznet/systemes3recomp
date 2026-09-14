@@ -63,6 +63,13 @@ void dispatch(CPU *c, uint32_t va)
     void (*fn)(CPU *) = find(va);
     if (fn) { fn(c); return; }
 
+    /* Real code the game got at run time rather than through the IAT: a COM
+     * vtable slot, a GetProcAddress result. The mirror of the callback problem
+     * and the same answer - it is real code, so run it as real code. Checked
+     * after the lifted table, because a guest address is the common case and
+     * this one costs a region lookup. */
+    if (es3_is_host_code(va)) { hle_call_address(c, va); return; }
+
     /* Not lifted. On a stripped PE this is the expected way to find out what
      * the catalog missed, so the message has to be worth acting on: the
      * address goes into a seed file and the next scan starts from it.

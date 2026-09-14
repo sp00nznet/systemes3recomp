@@ -75,6 +75,70 @@ static const struct { const char *name; unsigned char argc; } CI_HELPERS[] = {
 
 /* One handler for every forwarded import - which id it is arrives as an
  * argument, so there is no need to generate hundreds of identical stubs. */
+/* ---- calling a real function the game got at run time ----
+ *
+ * The IAT is not the only way a real address reaches lifted code. A COM
+ * interface is a pointer to a vtable of real function addresses, and
+ * `Direct3DCreate9`, `CoCreateInstance` and every `QueryInterface` hand one
+ * back; so does `GetProcAddress`. The game then calls through it, the lifter
+ * emits `dispatch(c, <that address>)`, and dispatch has never heard of it.
+ *
+ * It is the exact mirror of the callback problem, and it has the same answer:
+ * cross the boundary. The address is real code, so run it as real code, on the
+ * guest's own frame, through the same marshalling an import uses.
+ *
+ * The test is whether the page is executable and outside the guest image.
+ * VirtualQuery is far too slow to do per call - a game makes thousands of COM
+ * calls a frame - so the answer is cached by REGION: a DLL's code is one
+ * region, and a handful of them covers every library a title loads.
+ */
+#define HOST_REGIONS 64
+static struct { uint32_t lo, hi; } g_host_code[HOST_REGIONS];
+static unsigned g_host_n;
+
+int es3_is_host_code(uint32_t va)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    uint32_t base = guest_image_base();
+    unsigned i;
+
+    if (va >= base && va < base + guest_image_size()) return 0;
+    if (va < 0x10000u) return 0;
+
+    for (i = 0; i < g_host_n; i++)
+        if (va >= g_host_code[i].lo && va < g_host_code[i].hi) return 1;
+
+    if (!VirtualQuery((LPCVOID)(uintptr_t)va, &mbi, sizeof mbi)) return 0;
+    if (mbi.State != MEM_COMMIT) return 0;
+    if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                         PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+        return 0;
+
+    /* Cache it. Full is not an error - it degrades to a VirtualQuery per call,
+     * which is slow and still correct, and 64 regions is more than a game
+     * loads. */
+    if (g_host_n < HOST_REGIONS) {
+        g_host_code[g_host_n].lo = (uint32_t)(uintptr_t)mbi.BaseAddress;
+        g_host_code[g_host_n].hi = g_host_code[g_host_n].lo + (uint32_t)mbi.RegionSize;
+        g_host_n++;
+    }
+    return 1;
+}
+
+void hle_call_address(CPU *c, uint32_t target)
+{
+    hybrid_regs r;
+
+    r.eax = c->eax; r.ecx = c->ecx; r.edx = c->edx; r.ebx = c->ebx;
+    r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;
+
+    hybrid_call_machine(&r, target);
+
+    c->eax = r.eax;
+    c->edx = r.edx;
+    c->esp = r.esp;    /* the real callee's own `ret N` did the unwinding */
+}
+
 static void native_thunk(CPU *c, HleId id) { hle_call_native(c, id); }
 
 void hle_call_native(CPU *c, HleId id)
