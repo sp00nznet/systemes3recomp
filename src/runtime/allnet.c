@@ -74,12 +74,16 @@ static int reply_body(char *out, size_t n, const char *path)
      */
     if (strstr(path, "/board/getControlData")) {
         return sprintf_s(out, n,
-            "{\"status\":0,"
+            "{\"net_id\":\"AZZZ0123\","
+            "\"place_id\":\"0123\","
+            "\"game_id\":\"SBZB\","
+            "\"serial_no\":\"271000020001\","
+            "\"status\":0,"
             "\"store_id\":\"0123\","
             "\"store_name\":\"RECOMP\","
             "\"store_nickname\":\"RECOMP\","
-            "\"allnet_game_id\":\"MK31\","
-            "\"allnet_game_ver\":\"1.00.32\","
+            "\"allnet_game_id\":\"SBZB\","
+            "\"allnet_game_ver\":\"0.01\","
             "\"line_type\":1,"
             "\"area_cd_0\":\"1\","
             "\"area_name_0\":\"W\",\"area_name_1\":\"X\","
