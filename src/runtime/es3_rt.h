@@ -158,6 +158,10 @@ void es3_hle_connect(CPU *c, HleId id);
 void es3_hle_send(CPU *c, HleId id);
 void es3_hle_winhttp_connect(CPU *c, HleId id);
 void es3_hle_winhttp_open_request(CPU *c, HleId id);
+void es3_hle_bind(CPU *c, HleId id);
+void es3_hle_sendto(CPU *c, HleId id);
+void es3_hle_recvfrom(CPU *c, HleId id);
+void es3_hle_wsaioctl(CPU *c, HleId id);
 
 /* The same, qualified by DLL, and what a board handler must use. An import's
  * identity is (DLL, name): the OKAO Vision libraries export by ordinal only,

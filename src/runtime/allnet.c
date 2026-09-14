@@ -331,3 +331,142 @@ void es3_hle_winhttp_open_request(CPU *c, HleId id)
         wr32(c->esp + 4 + 4 * 6, flags & ~WINHTTP_SECURE);
     hle_call_native(c, id);
 }
+
+/*
+ * The cabinet link, traced.
+ *
+ * `LOCAL NETWORK ERROR` is not All.Net at all - it is the LAN between the
+ * cabinets of one bank. A worker thread at 0x006770B0 opens a broadcast UDP
+ * socket, binds a second one, sends an eight-byte discovery packet and waits;
+ * `[[0x95A87C]+4]+0x1C` stays negative and the frame tick reports the error.
+ *
+ * These say where that packet goes and whether anything answers, which is the
+ * question a single cabinet on a host with eleven virtual adapters raises.
+ */
+static void say_sockaddr(const char *what, uint32_t sa, int n)
+{
+    const unsigned char *b = (const unsigned char *)(uintptr_t)sa;
+    if (!sa) { fprintf(stderr, "[link] %s <null>\n", what); return; }
+    fprintf(stderr, "[link] %s %u.%u.%u.%u:%u (%d bytes)\n", what,
+            b[4], b[5], b[6], b[7], (unsigned)(b[2] << 8 | b[3]), n);
+}
+
+void es3_hle_bind(CPU *c, HleId id)
+{
+    if (g_trace) say_sockaddr("bind", A32(1), (int)A32(2));
+    hle_call_native(c, id);
+}
+
+void es3_hle_sendto(CPU *c, HleId id)
+{
+    uint32_t len = A32(2), to = A32(4);
+    if (g_trace) {
+        const unsigned char *p = (const unsigned char *)(uintptr_t)A32(1);
+        unsigned i, show = len > 16 ? 16 : len;
+        say_sockaddr("sendto", to, (int)len);
+        fprintf(stderr, "[link]  ");
+        for (i = 0; i < show; i++) fprintf(stderr, " %02X", p[i]);
+        fprintf(stderr, "\n");
+    }
+    hle_call_native(c, id);
+}
+
+void es3_hle_recvfrom(CPU *c, HleId id)
+{
+    uint32_t buf = A32(1), from = A32(4);
+    hle_call_native(c, id);
+    if (g_trace && (int32_t)c->eax > 0) {
+        const unsigned char *p = (const unsigned char *)(uintptr_t)buf;
+        unsigned i, show = c->eax > 16 ? 16 : c->eax;
+        say_sockaddr("recvfrom", from, (int)c->eax);
+        fprintf(stderr, "[link]  ");
+        for (i = 0; i < show; i++) fprintf(stderr, " %02X", p[i]);
+        fprintf(stderr, "\n");
+    }
+}
+
+/*
+ * One interface, the one Windows actually routes through.
+ *
+ * `0x00678330` asks for SIO_GET_INTERFACE_LIST and walks every entry that is
+ * up and not loopback, overwriting `[0x00952924]` each time - so the LAST such
+ * interface becomes "the cabinet's IP". On a developer's machine that is
+ * whichever virtual adapter sorts last: this one has eleven, and the game
+ * adopted 172.19.0.1 while its own broadcast to 255.255.255.255:20199 came
+ * back from 192.168.100.129. A cabinet that cannot recognise its own discovery
+ * packet reports LOCAL NETWORK ERROR, and no amount of answering All.Net helps.
+ *
+ * So the list is filtered to the interface the routing table picks. connect()
+ * on a UDP socket sends nothing - it is a route lookup and a getsockname - so
+ * this asks Windows the same question the game's own sendto() will ask.
+ *
+ * ES3_NO_LINK_FIX leaves the list alone.
+ */
+#define SIO_GET_INTERFACE_LIST_ 0x4004747Fu
+#define IFINFO 76u                        /* sizeof(INTERFACE_INFO) */
+
+static uint32_t preferred_addr(void)
+{
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in to, me;
+    int n = sizeof me;
+    uint32_t got = 0;
+    BOOL yes = TRUE;
+    if (s == INVALID_SOCKET) return 0;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, (const char *)&yes, sizeof yes);
+    memset(&to, 0, sizeof to);
+    to.sin_family = AF_INET;
+    to.sin_port = htons(20199);
+    to.sin_addr.s_addr = INADDR_BROADCAST;
+    if (connect(s, (struct sockaddr *)&to, sizeof to) == 0 &&
+        getsockname(s, (struct sockaddr *)&me, &n) == 0)
+        got = me.sin_addr.s_addr;
+    closesocket(s);
+    return got;
+}
+
+void es3_hle_wsaioctl(CPU *c, HleId id)
+{
+    uint32_t code = A32(1), out = A32(4), pret = A32(6);
+    uint32_t want, bytes, k, n;
+    unsigned char *p;
+    static int said;
+
+    hle_call_native(c, id);
+
+    if (code != SIO_GET_INTERFACE_LIST_ || c->eax != 0 || !out || !pret) return;
+    if (getenv("ES3_NO_LINK_FIX")) return;
+
+    bytes = rd32(pret);
+    n = bytes / IFINFO;
+    if (n < 2) return;                    /* one interface is already the answer */
+
+    want = preferred_addr();
+    if (!want) return;
+
+    p = (unsigned char *)(uintptr_t)out;
+    for (k = 0; k < n; k++) {
+        uint32_t a;
+        memcpy(&a, p + k * IFINFO + 8, 4);      /* iiAddress.sin_addr */
+        if (a != want) continue;
+        if (k) memcpy(p, p + k * IFINFO, IFINFO);
+        /* 24, not 76. The game's own count is `bytes / 24` (a compiler
+         * reciprocal-multiply, plain as day at 0x0067839E) while it strides
+         * the array by sizeof(INTERFACE_INFO) = 76 - so it always walks three
+         * times as many entries as the buffer holds, off the end of a 1520
+         * byte stack array, and the address it ends up calling the cabinet's
+         * own is whatever garbage sorted last. Reporting 76 here handed it
+         * three entries and it adopted two of stack. Report what makes its
+         * arithmetic say one. */
+        wr32(pret, 24u);
+        if (!said) {
+            const unsigned char *b = (const unsigned char *)&want;
+            said = 1;
+            fprintf(stderr, "[link] %u interfaces; giving the game only "
+                            "%u.%u.%u.%u, the one this machine routes through "
+                            "(ES3_NO_LINK_FIX to hand over all of them)\n",
+                    n, b[0], b[1], b[2], b[3]);
+        }
+        return;
+    }
+}
