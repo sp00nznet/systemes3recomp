@@ -159,6 +159,62 @@ void es3_d3d_note_factory(uint32_t iface)
             g_d3d_create_device, g_d3d_create_device_ex);
 }
 
+/*
+ * ES3_TRACE_D3D: the first call to each slot of the device's vtable.
+ *
+ * A black window with a working device in it is one of two things - a game
+ * that is not drawing, or a game that is drawing and never presenting - and
+ * from outside they look identical. The vtable says which: IDirect3DDevice9
+ * has Present at slot 17, BeginScene at 41, EndScene at 42 and Clear at 43. If
+ * none of those is ever reached, nothing is being asked of the renderer at all
+ * and the problem is upstream of the graphics entirely.
+ *
+ * There are no names at run time, only addresses, so the slots are read out of
+ * the interface the game was handed and matched by address.
+ */
+#define D3D_DEV_SLOTS 120
+static uint32_t g_dev_slot[D3D_DEV_SLOTS];
+static unsigned char g_dev_seen[D3D_DEV_SLOTS];
+static int g_trace_d3d = -1;
+
+void es3_d3d_note_device(uint32_t iface)
+{
+    uint32_t vt;
+    int i;
+    if (g_trace_d3d < 0) g_trace_d3d = getenv("ES3_TRACE_D3D") != NULL;
+    if (!g_trace_d3d || !iface || g_dev_slot[0]) return;
+    vt = rd32(iface);
+    if (!vt) return;
+    for (i = 0; i < D3D_DEV_SLOTS; i++) g_dev_slot[i] = rd32(vt + 4 * i);
+    fprintf(stderr, "[d3d] device vtable at %08X; watching %d slots\n",
+            vt, D3D_DEV_SLOTS);
+}
+
+static const char *dev_slot_name(int i)
+{
+    switch (i) {
+    case 3:  return "TestCooperativeLevel";
+    case 16: return "Reset";
+    case 17: return "Present";
+    case 41: return "BeginScene";
+    case 42: return "EndScene";
+    case 43: return "Clear";
+    default: return "";
+    }
+}
+
+static void note_device_call(uint32_t target)
+{
+    int i;
+    if (g_trace_d3d <= 0 || !g_dev_slot[0]) return;
+    for (i = 0; i < D3D_DEV_SLOTS; i++) {
+        if (g_dev_slot[i] != target || g_dev_seen[i]) continue;
+        g_dev_seen[i] = 1;
+        fprintf(stderr, "[d3d] device slot %d %s\n", i, dev_slot_name(i));
+        return;
+    }
+}
+
 /* D3DPRESENT_PARAMETERS: Windowed is at +0x20, the refresh rate at +0x30. */
 static void force_windowed(CPU *c, uint32_t target)
 {
@@ -194,8 +250,27 @@ void hle_call_address(CPU *c, uint32_t target)
     r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;
 
     force_windowed(c, target);
+    note_device_call(target);
 
     hybrid_call_machine(&r, target);
+
+    /* The one COM result worth a line: whether the renderer exists. Everything
+     * the game draws depends on it, and a device that failed leaves a window
+     * that is simply black - which looks exactly like a game that has not got
+     * there yet. */
+    if (target && (target == g_d3d_create_device ||
+                   target == g_d3d_create_device_ex)) {
+        static unsigned char said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[d3d] CreateDevice%s returned %08X\n",
+                    target == g_d3d_create_device_ex ? "Ex" : "", r.eax);
+        }
+        if (r.eax == 0) {
+            uint32_t ppdev = A32(target == g_d3d_create_device_ex ? 7 : 6);
+            if (ppdev) es3_d3d_note_device(rd32(ppdev));
+        }
+    }
 
     c->eax = r.eax;
     c->edx = r.edx;

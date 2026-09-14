@@ -111,6 +111,78 @@ void es3_teb_cover(uint32_t lo, uint32_t hi)
  *
  * Called from guest_load, before a single guest instruction runs.
  */
+#define ES3_WINDOW_W 1280
+#define ES3_WINDOW_H 720
+
+/*
+ * A dead man's switch for the screen.
+ *
+ * The runtime forces every Direct3D device windowed and clamps every window it
+ * creates, and both of those depend on recognising the right call. This does
+ * not depend on anything: it looks at what is actually on the display, ten
+ * times a second, and ends the process if this program has covered it.
+ *
+ * That matters because the failure it guards against is not a crash. A
+ * recompiled arcade game that goes exclusive fullscreen takes the whole
+ * machine away from the person running it, who is usually reading a log next
+ * to it and has no way to get the desktop back. Being wrong about a vtable
+ * slot should cost a run, not a session.
+ *
+ * ES3_FULLSCREEN turns the whole thing off, this included.
+ */
+static DWORD WINAPI screen_watchdog(void *unused)
+{
+    int cx = GetSystemMetrics(SM_CXSCREEN), cy = GetSystemMetrics(SM_CYSCREEN);
+    unsigned caught = 0;
+    (void)unused;
+    for (;;) {
+        HWND h = NULL;
+        Sleep(100);
+        while ((h = FindWindowExA(NULL, h, NULL, NULL)) != NULL) {
+            DWORD pid = 0;
+            RECT r;
+            GetWindowThreadProcessId(h, &pid);
+            if (pid != GetCurrentProcessId() || !IsWindowVisible(h)) continue;
+            if (!GetWindowRect(h, &r)) continue;
+            if (r.right - r.left < cx || r.bottom - r.top < cy) continue;
+
+            /* Put it back rather than end the run. The game maximises itself
+             * at some point after creation - through the window, not through
+             * Direct3D, so none of the call-level clamps see it - and a run
+             * that dies here tells nobody anything about what it was drawing.
+             * Shrinking it costs the game nothing it will notice. */
+            if (++caught <= 4)
+                fprintf(stderr, "\n[screen] the game made its window %ldx%ld, "
+                                "the size of the display; putting it back to "
+                                "%dx%d.\n", r.right - r.left, r.bottom - r.top,
+                        ES3_WINDOW_W, ES3_WINDOW_H);
+            ShowWindow(h, SW_RESTORE);
+            SetWindowPos(h, HWND_NOTOPMOST, 64, 64, ES3_WINDOW_W, ES3_WINDOW_H,
+                         SWP_NOACTIVATE);
+
+            /* Unless it will not stay put. Then it is a fight this cannot win,
+             * and leaving somebody without a desktop is worse than losing the
+             * run. */
+            if (caught > 40) {
+                fprintf(stderr, "\n[screen] it keeps covering the display. "
+                                "Ending it rather than leaving you without a "
+                                "desktop -\n         set ES3_FULLSCREEN=1 if "
+                                "you meant it.\n");
+                fflush(stderr);
+                TerminateProcess(GetCurrentProcess(), 3);
+            }
+        }
+    }
+}
+
+void es3_start_screen_watchdog(void)
+{
+    HANDLE t;
+    if (getenv("ES3_FULLSCREEN")) return;
+    t = CreateThread(NULL, 0, screen_watchdog, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
 void es3_window_selftest(void)
 {
     WNDCLASSW wc;
@@ -231,6 +303,7 @@ int guest_load(const char *exe_path)
 {
     FILE *f;
 #ifdef _WIN32
+    es3_start_screen_watchdog();
     if (getenv("ES3_WINTEST")) es3_window_selftest();
 #endif
     f = fopen(exe_path, "rb");

@@ -67,6 +67,11 @@ uint32_t guest_image_size(void);
 void es3_teb_cover(uint32_t lo, uint32_t hi);
 void es3_window_selftest(void);
 
+/* End the process if it ever covers the whole display. A safety net under the
+ * windowed forcing, which depends on recognising calls; this depends on
+ * nothing. See guest.c. */
+void es3_start_screen_watchdog(void);
+
 /* ---- the import boundary ----
  *
  * A PE reaches its libraries through the IAT: `call dword ptr [__imp_X]` reads
@@ -193,6 +198,9 @@ void hle_call_native_noreturn(CPU *c, HleId id);
 /* Remember an IDirect3D9Ex factory so its CreateDevice/CreateDeviceEx slots
  * can be recognised later and forced windowed - see hle_native.c. */
 void es3_d3d_note_factory(uint32_t iface);
+
+/* ES3_TRACE_D3D: record the device vtable so its slots can be named. */
+void es3_d3d_note_device(uint32_t iface);
 
 /* Name and originating DLL for an id, for diagnostics. */
 const char *hle_name(HleId id);
