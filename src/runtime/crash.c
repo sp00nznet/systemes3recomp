@@ -318,29 +318,42 @@ static struct {
 static unsigned g_npeek;
 static int g_peek_read;
 
+/* One entry's little program: leading stars, an address, then `*` and `+hex`
+ * in written order. Returns where it stopped, or NULL if there was no
+ * address there at all. Shared with ES3_POKE. */
+static const char *chain(const char *e, uint32_t *addr, unsigned *nops,
+                         struct { char op; uint32_t arg; } *ops)
+{
+    unsigned stars = 0, n = 0;
+    char *end;
+    unsigned long v;
+
+    while (*e == '*') { stars++; e++; }
+    v = strtoul(e, &end, 16);
+    if (end == e) return NULL;
+    *addr = (uint32_t)v;
+    e = end;
+    while (stars-- && n < PEEK_OPS) ops[n++].op = '*';
+    while (*e && *e != ',' && *e != '=' && n < PEEK_OPS) {
+        if (*e == '*') { ops[n].op = '*'; n++; e++; }
+        else if (*e == '+') {
+            ops[n].op = '+';
+            ops[n].arg = (uint32_t)strtoul(e + 1, &end, 16);
+            n++; e = end;
+        } else break;
+    }
+    *nops = n;
+    return e;
+}
+
 static void peek_init(void)
 {
     const char *e = getenv("ES3_PEEK");
     g_peek_read = 1;
     while (e && *e && g_npeek < PEEK_MAX) {
-        unsigned stars = 0, n = 0;
-        char *end;
-        unsigned long v;
-        while (*e == '*') { stars++; e++; }
-        v = strtoul(e, &end, 16);
-        if (end == e) break;
-        g_peek[g_npeek].addr = (uint32_t)v;
-        e = end;
-        while (stars-- && n < PEEK_OPS) g_peek[g_npeek].ops[n++].op = '*';
-        while (*e && *e != ',' && n < PEEK_OPS) {
-            if (*e == '*') { g_peek[g_npeek].ops[n].op = '*'; n++; e++; }
-            else if (*e == '+') {
-                g_peek[g_npeek].ops[n].op = '+';
-                g_peek[g_npeek].ops[n].arg = (uint32_t)strtoul(e + 1, &end, 16);
-                n++; e = end;
-            } else break;
-        }
-        g_peek[g_npeek].nops = n;
+        e = chain(e, &g_peek[g_npeek].addr, &g_peek[g_npeek].nops,
+                  g_peek[g_npeek].ops);
+        if (!e) break;
         g_npeek++;
         if (*e == ',') e++;
     }
@@ -356,6 +369,62 @@ static int readable(uint32_t a, size_t n)
     if (mi.State != MEM_COMMIT) return 0;
     if (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
     return a + n <= (uint32_t)(uintptr_t)mi.BaseAddress + (uint32_t)mi.RegionSize;
+}
+
+/* ES3_POKE=9595c0=2 - write a guest value, every thread report.
+ *
+ * The other half of ES3_PEEK, and it earns its place on the same question:
+ * when a boot stalls waiting for a piece of hardware, the cheapest way to find
+ * out whether THAT is what it is waiting for is to write the value the
+ * hardware would have produced and watch what happens next. It is not a fix -
+ * a fix emulates the device - it is the experiment that says whether the
+ * device is worth emulating.
+ *
+ * Same chain syntax, then `=value`. Rewritten on every report, because the
+ * game writes its own value back.
+ */
+#define POKE_MAX 8
+static struct {
+    uint32_t addr, value;
+    unsigned nops;
+    struct { char op; uint32_t arg; } ops[PEEK_OPS];
+} g_poke[POKE_MAX];
+static unsigned g_npoke;
+static int g_poke_read;
+
+static void poke_init(void)
+{
+    const char *e = getenv("ES3_POKE");
+    char *end;
+    g_poke_read = 1;
+    while (e && *e && g_npoke < POKE_MAX) {
+        e = chain(e, &g_poke[g_npoke].addr, &g_poke[g_npoke].nops,
+                  g_poke[g_npoke].ops);
+        if (!e || *e != '=') break;
+        g_poke[g_npoke].value = (uint32_t)strtoul(e + 1, &end, 16);
+        e = end;
+        g_npoke++;
+        if (*e == ',') e++;
+    }
+    if (g_npoke)
+        fprintf(stderr, "[poke] holding %u guest value(s) down\n", g_npoke);
+}
+
+static void apply_pokes(void)
+{
+    unsigned k, o;
+    if (!g_poke_read) poke_init();
+    for (k = 0; k < g_npoke; k++) {
+        uint32_t v = g_poke[k].addr;
+        int bad = 0;
+        for (o = 0; o < g_poke[k].nops && !bad; o++) {
+            if (g_poke[k].ops[o].op == '+') { v += g_poke[k].ops[o].arg; continue; }
+            if (!readable(v, 4)) { bad = 1; break; }
+            v = *(const uint32_t *)(uintptr_t)v;
+        }
+        if (bad || !readable(v, 4)) continue;
+        *(uint32_t *)(uintptr_t)v = g_poke[k].value;
+    }
 }
 
 static void report_peeks(void)
@@ -454,6 +523,7 @@ void es3_report_threads(void)
     }
     CloseHandle(snap);
     fprintf(stderr, "  %u thread(s)\n", n);
+    apply_pokes();
     report_peeks();
     fflush(stderr);
 }
