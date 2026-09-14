@@ -274,7 +274,7 @@ static void force_windowed(CPU *c, uint32_t target)
  * one route it cannot undo by resizing a window.
  */
 static uint32_t g_dxgi_lo, g_dxgi_hi;
-static uint32_t g_dxgi_swapchain, g_dxgi_present;
+static uint32_t g_dxgi_swapchain, g_dxgi_present, g_dxgi_chains;
 
 static int in_dxgi(uint32_t target)
 {
@@ -421,7 +421,12 @@ void hle_call_address(CPU *c, uint32_t target)
         uint32_t pp = A32(3);
         if (pp) {
             uint32_t sc = rd32(pp);
-            if (sc && !g_dxgi_swapchain) {
+            /* The LATEST, not the first. A game that recreates its swap chain
+             * - a resize, a mode change, a device reset - leaves the old one
+             * present-less, and reading a back buffer nobody draws into any
+             * more is a very convincing way to prove a game is not rendering
+             * when it is. */
+            if (sc && sc != g_dxgi_swapchain) {
                 g_dxgi_swapchain = sc;
                 g_dxgi_present = rd32(rd32(sc) + 4 * 8);
                 fprintf(stderr, "[dxgi] swap chain at %08X, Present at %08X\n",
