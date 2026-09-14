@@ -359,10 +359,18 @@ static DWORD WINAPI peek_watchdog(void *unused)
     unsigned seconds = stall ? (unsigned)atoi(stall) : 5u;
     (void)unused;
     if (!seconds) seconds = 5u;
+    /* A second at a time, because the two jobs here want different clocks: a
+     * watchpoint has to be armed the moment its chain resolves - the write
+     * worth catching is usually the next one - while a peek report every
+     * second would be noise. So tick the watch every second and report on the
+     * period. */
     for (;;) {
-        Sleep(seconds * 1000u);
+        unsigned n;
+        for (n = 0; n < seconds; n++) {
+            Sleep(1000);
+            es3_watch_mem_tick();
+        }
         es3_report_peeks();
-        es3_watch_mem_tick();
         fflush(stderr);
     }
 }
