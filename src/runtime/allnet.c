@@ -57,6 +57,46 @@ static int reply_body(char *out, size_t n, const char *path)
     struct tm tm;
     localtime_s(&tm, &t);
 
+    /*
+     * Namco's own service speaks JSON, not All.Net's key=value.
+     *
+     * The game asks `amk3-stg.nbgi-amnet.jp` for `/board/getControlData` and
+     * then a family of `/amid/...` calls - the banapassport side. Answering
+     * those with an All.Net reply gets the parse rejected in the game's own
+     * words: `このJsonの解析はフォーマットが違う`, this Json's format is wrong,
+     * with our body quoted back.
+     *
+     * The field names are not guessed. They are a block in .rdata at
+     * 0x00487BF0: store_id, allnet_game_id, allnet_game_ver, line_type,
+     * store_name, store_nickname, area_cd_0, area_name_0..3, country_code,
+     * time_zone, status, started_at, yuai_option_limit_at - which is a
+     * getControlData response written out.
+     */
+    if (strstr(path, "/board/getControlData")) {
+        return sprintf_s(out, n,
+            "{\"status\":0,"
+            "\"store_id\":\"0123\","
+            "\"store_name\":\"RECOMP\","
+            "\"store_nickname\":\"RECOMP\","
+            "\"allnet_game_id\":\"MK31\","
+            "\"allnet_game_ver\":\"1.00.32\","
+            "\"line_type\":1,"
+            "\"area_cd_0\":\"1\","
+            "\"area_name_0\":\"W\",\"area_name_1\":\"X\","
+            "\"area_name_2\":\"Y\",\"area_name_3\":\"Z\","
+            "\"country_code\":\"JPN\","
+            "\"time_zone\":\"+09:00\","
+            "\"started_at\":\"%04d-%02d-%02dT%02d:%02d:%02dZ\","
+            "\"yuai_option_limit_at\":\"2099-12-31T23:59:59Z\"}",
+            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+            tm.tm_hour, tm.tm_min, tm.tm_sec);
+    }
+
+    /* The rest of that API - the banapassport calls - with nothing to say. */
+    if (strstr(path, "/amid/") || strstr(path, "/board/") ||
+        strstr(path, "/incoming/"))
+        return sprintf_s(out, n, "{\"status\":0}");
+
     if (strstr(path, "DownloadOrder"))
         return sprintf_s(out, n, "stat=1&uri=&host=");
 
