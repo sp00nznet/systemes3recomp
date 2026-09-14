@@ -181,74 +181,85 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 |---|---|
 | PE parsing | **Works.** Verified against four *Mario Kart Arcade GP DX* builds spanning 2013–2022. Sections, entry, 495 imports across 27 DLLs, 108,414 relocations. |
 | Function recovery | **26,075 real ones.** A first pass found 28,597; 2,526 of those were addresses inside instructions and 237 more only showed up once the catalog was complete. 2,586 branch targets then had to be *added*, because clamping a function at a shared epilogue leaves its second half unreachable. |
-| Lifting | **Works.** All 25,838 sized functions lift to **2,099,274 lines of C** in 65 translation units. Not one fails outright. |
-| Instruction coverage | **99.9928%.** 152 emitted lines are unlifted, down from 50,555 before the x87 compares landed upstream and 560 before the false starts went. |
+| Lifting | **Works.** 31,096 functions lift to **2,633,954 lines of C** in 78 translation units. Not one fails outright. The count grew past the catalog's own because the driver now closes what the *generated text* dispatches to, round after round, until nothing is left open - which is a thing the catalog cannot know, because some of those addresses are the lifter's own arithmetic. |
+| Instruction coverage | **99.966%.** 886 emitted lines out of 2.6 million are unlifted, and the game has now executed none of them: the ones it used to reach - `lock xadd`, `lock cmpxchg`, `cvtdq2ps` - went upstream this round. What is left is overwhelmingly data the recovery pass mistook for code. |
 | Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Boots and stays up.** The full lifted image runs indefinitely - 47 million guest calls and counting, 27 threads, no crash. It reads its config, starts D3DX10's thread pump, registers a window class with a working window procedure, and calls `CreateWindowExW`. That call fails, and it is the only thing between here and a picture - see below. |
+| Runtime | **Boots, opens a window, brings up both renderers.** The full lifted image creates its `mkart3` window, gets a working window procedure through it, brings up Direct3D 9Ex and Direct3D 10, loads its shader effects with D3DX10, opens DirectInput 8, and runs a real frame loop with D3DX10's thread pump feeding it through lifted callbacks. The window is still black and the process ends after about twenty-five seconds - see below. |
 | Imports, from the game tree | **495 of 495.** Run from a real tree and every import resolves against a real DLL, the cabinet ones included: the OKAO Vision camera and `JVSEmuMK.dll` ship with the game, so `hle_native.c` forwards to the actual board libraries. |
 | The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
 
-### What is still unlifted, in full
+### Getting from a window that would not open to a window that runs
 
-560 lines out of 2.1 million, and no single family dominates any more:
+Five things were in the way, and only the first was about windows.
 
-| | count |
-|---|---:|
-| `in` / `out` / `insb` — port I/O, which userspace has no business doing | 82 |
-| `clc` `stc` `cli` `hlt` `into` `iretd` `pushal` `arpl` `salc` … | ~180 |
-| MMX — `movd` `psrlq` `psllq` `por` `emms` (a second register file, not SSE) | ~60 |
-| `jmp`/`call fword ptr` — m16:32 far pointers, which a flat model cannot take | 13 |
-| packed SSE — `shufps` `mulps` `addps` | few |
+**The callback arena.** `hybrid`'s per-thread arena was reserved *and*
+committed whole. Seventeen threads at 64 MB is most of a 32-bit address space,
+and the thread that lost the race got no arena - then returned 0 from every
+callback, silently. A window procedure answering 0 to `WM_NCCREATE` is
+`CreateWindowExW` returning NULL and setting `ERROR_NOT_ENOUGH_MEMORY`, which
+is true and about the wrong thing entirely. Fixed upstream: reserve whole,
+commit a frame at a time, and say so out loud when it fails.
 
-**A good part of that is not really code.** `hlt`, `cli`, `into`, `iretd`,
-`arpl` and `salc` do not appear in a compiled Win32 user-mode program. They are
-what data looks like when the recovery pass takes a pointer-shaped word for a
-function start — which is the honest reading of this table, and the reason
-[CONTRIBUTING](CONTRIBUTING.md) puts recovery precision above everything else.
+**A jump table one arm short.** The window procedure's message switch has ten
+arms; the lifter stopped walking the table at the first entry outside the
+current function, and arm nine - `WM_NCCREATE` - was past a neighbour that
+recovery had called a function of its own. So the procedure reached `abort()`
+for the one message that decides whether a window exists.
 
-Packed SSE arithmetic is the one left out deliberately rather than missed: it
-needs per-lane code, and a plausible-looking wrong lane is worse than an honest
-`abort()`.
+**An extent ending mid-instruction.** Clamping a recovered function against a
+false start cuts an instruction in half, and the fall-through address then
+lands *inside* a real one. `74 5B` is a two-byte `je`; read from its second
+byte it is `pop ebx`. No fault, and the guest stack one slot out from then on.
 
-### Where it stops, exactly
+**The guest's own HINSTANCE.** An MSVC image knows its base as a link-time
+constant and hands it to Windows wherever a module handle is wanted. Here that
+is `0x00400000` - a region `VirtualAlloc` handed out, which the loader has
+never heard of. `DirectInput8Create` returned `E_INVALIDARG`, the input
+initialiser returned false, and every subsystem open after it was skipped;
+that surfaced thirty thousand calls later as a task updating through a null
+singleton. The runtime now substitutes its own module handle, in the libraries
+where a module handle is the only thing that argument can be.
 
-One Win32 call:
+**Real code calling guest code.** The window procedure and the thread entry are
+*arguments*, so they can be thunked. A COM interface the game implements is
+not: Mario Kart hands D3DX10's thread pump an `ID3DX10DataLoader` whose vtable
+is seven guest addresses, and D3DX10 calls them on its own worker threads -
+running the original bytes, into an IAT full of sentinels, faulting on an
+import nobody called.
 
-```
-[wndclass] RegisterClassExW @0405C848:
-    cbSize=00000030 style=00000000 lpfnWndProc=04060640  <- our thunk
-    cbClsExtra=0 cbWndExtra=0 hInstance=00400000
-    hIcon=0 hCursor=00010003 hbrBackground=00900011 lpszClassName=0405C878
-[call] RegisterClassExW(0405C848) = 0000C3AA   (last error 0)
-[call] CreateWindowExW(0, class, title, WS_POPUP|WS_VISIBLE,
-                       CW_USEDEFAULT, CW_USEDEFAULT, 1360, 768,
-                       0, 0, 00400000, 0) = 00000000   (last error 8)
-```
+The answer generalises, so it is worth stating plainly: **the guest image is
+mapped without execute.** Any pointer to guest code that reaches a real library
+unthunked now arrives as an execute violation at the address that was called,
+with the caller's registers in the `CONTEXT` and its return address on the
+stack - which is everything a dispatch needs. `crash.c` builds a CPU from the
+context, runs the lifted function, and resumes at the return address. One
+handler covers every unthunked callback there will ever be, including the ones
+nobody has found yet.
 
-The class registers and returns a valid atom. `CreateWindowExW` returns NULL
-with **ERROR_NOT_ENOUGH_MEMORY**, for both windows the game makes.
+### Where it stops now
 
-What is known about it:
+The window is real, visible, and the right size, and it is black. `Present` is
+never reached: the game creates both devices and loads its effects, but the
+frame it is drawing does not arrive on screen, and the process ends after about
+twenty-five seconds with no fault and nothing in the log - which is the
+signature of a forwarded CRT calling `__fastfail`, or of `ExitProcess` from a
+thread that decided the boot had failed.
 
-* The window procedure is a real `hybrid_thunk`, and it matters. With
-  `ES3_NO_WNDPROC_THUNK=1` - which leaves the raw guest address in the class -
-  `CreateWindowExW` never returns at all, because USER32 calls the *unlifted*
-  original. So the window procedure is genuinely being called during creation,
-  and the thunked path at least gets an answer back.
-* The class fields are all sane: real `GetStockObject` and `LoadCursorW`
-  handles, zero extra bytes, a plausible `lpszClassName`.
-* `hInstance` for the first window is `0x00400000`, the *guest* image base,
-  which is not a module the host loader knows. The second uses the host's own
-  `0x20000000` and fails the same way, so that is suspicious rather than
-  damning.
-* The TEB stack widening is necessary (without it the boot dies much earlier,
-  at `OutputDebugStringA`) and the range it produces spans both stacks with
-  unmapped space between them, which USER32 does look at.
+The next thing to find out is which, and the instruments are already in the
+runtime:
 
-The toggles for isolating it are in the runtime already:
-`ES3_TRACE_IMPORTS`, `ES3_TRACE_CALLS=Name,Name`, `ES3_NO_WNDPROC_THUNK`,
-`ES3_NO_TEB_COVER`.
+| | |
+|---|---|
+| `ES3_TRACE_IMPORTS=1` | the first call to each import, in order |
+| `ES3_TRACE_CALLS=Name,Name` | every call to those, with arguments, result and last error |
+| `ES3_WATCH_VA=6ab300,4042c0` | when those guest functions are entered, from where, on which thread, and what they returned |
+| `es3_trail.bin` | every dispatch of the whole boot - a million entries, `py -3.11 -m tools trail` |
+| `ES3_WINTEST=1` | can this process make a plain Win32 window at all |
+| `ES3_NO_HINSTANCE_FIX=1`, `ES3_GUEST_EXECUTABLE=1`, `ES3_NO_TEB_COVER=1`, `ES3_NO_WNDPROC_THUNK=1` | turn each of the above off and watch the symptom come back |
+
+`[game]` lines are the game's own `OutputDebugString` - the only account of the
+boot written by someone who knew what it was supposed to do.
 
 ### How it got this far
 
@@ -309,100 +320,6 @@ is how you find them.
 That is a quarter of the image reached by a path that should not have been
 needed. It works, and it is not right, and it is the most valuable thing in
 this repo to improve.
-
-### Where it stops, exactly
-
-One Win32 call:
-
-```
-[wndclass] RegisterClassExW @0405C848:
-    cbSize=00000030 style=00000000 lpfnWndProc=04060640  <- our thunk
-    cbClsExtra=0 cbWndExtra=0 hInstance=00400000
-    hIcon=0 hCursor=00010003 hbrBackground=00900011 lpszClassName=0405C878
-[call] RegisterClassExW(0405C848) = 0000C3AA   (last error 0)
-[call] CreateWindowExW(0, class, title, WS_POPUP|WS_VISIBLE,
-                       CW_USEDEFAULT, CW_USEDEFAULT, 1360, 768,
-                       0, 0, 00400000, 0) = 00000000   (last error 8)
-```
-
-The class registers and returns a valid atom. `CreateWindowExW` returns NULL
-with **ERROR_NOT_ENOUGH_MEMORY**, for both windows the game makes.
-
-What is known about it:
-
-* The window procedure is a real `hybrid_thunk`, and it matters. With
-  `ES3_NO_WNDPROC_THUNK=1` - which leaves the raw guest address in the class -
-  `CreateWindowExW` never returns at all, because USER32 calls the *unlifted*
-  original. So the window procedure is genuinely being called during creation,
-  and the thunked path at least gets an answer back.
-* The class fields are all sane: real `GetStockObject` and `LoadCursorW`
-  handles, zero extra bytes, a plausible `lpszClassName`.
-* `hInstance` for the first window is `0x00400000`, the *guest* image base,
-  which is not a module the host loader knows. The second uses the host's own
-  `0x20000000` and fails the same way, so that is suspicious rather than
-  damning.
-* The TEB stack widening is necessary (without it the boot dies much earlier,
-  at `OutputDebugStringA`) and the range it produces spans both stacks with
-  unmapped space between them, which USER32 does look at.
-
-The toggles for isolating it are in the runtime already:
-`ES3_TRACE_IMPORTS`, `ES3_TRACE_CALLS=Name,Name`, `ES3_NO_WNDPROC_THUNK`,
-`ES3_NO_TEB_COVER`.
-
-### How it got this far
-
-```
-=== the guest faulted ===
-  guest image at 0x00400000, 18 dispatches so far
-  last 16 dispatches (oldest first):
-    E5300130  import LoadLibraryW (KERNEL32.dll)      <- the JVS injection stub
-    007CC173  inside the guest image                  <- mainCRTStartup
-    E53000F8  import GetSystemTimeAsFileTime          <- __security_init_cookie
-    E53000C8  import GetCurrentProcessId
-    E53000CC  import GetCurrentThreadId
-    E53000FC  import GetTickCount
-    E530014C  import QueryPerformanceCounter
-    007CB99B  inside the guest image
-    007CB70B  inside the guest image
-    007CBEB0  inside the guest image
-    E53000F0  import GetStartupInfoW                  <- __tmainCRTStartup
-    E5300108  import HeapSetInformation
-    E5300114  import InterlockedCompareExchange
-    007CC142  inside the guest image
-    E53002FC  import _initterm_e (MSVCR100.dll)       <- and here
-  E5300298 could not be executed   an IMPORT SENTINEL
-
-  That address is the import sentinel for __set_app_type (MSVCR100.dll).
-```
-
-Every one of these was found by running it, and each one moved the boot:
-
-| what was wrong | got to |
-|---|---:|
-| `mainCRTStartup` was past `.text`'s VirtualSize, so the scan never saw it | 0 |
-| `_initterm_e` ran the initialiser table as native code | 18 |
-| `_fmode` is a variable, and its IAT slot held a sentinel | 21 |
-| `0x0081C100` is the third byte of an `fld` and lifted to `hlt` | 111 |
-| a false start's neighbour was clamped onto it and fell into nothing | 637 |
-| a shared epilogue cut a function whose branch targets then had no body | 1,171 |
-| SEH cannot work on a stack the TEB has never heard of | 2,015 |
-| 32 KB is not a stack for a worker thread running the game's call graph | 13,373 |
-
-### The binary is stripped
-
-Worth saying on its own, because it is the one place this platform is *harder*
-than Lindbergh. A Lindbergh ELF ships its full symbol table — 31,752 named,
-sized functions, no discovery problem at all. An ES3 executable ships nothing:
-the PDB path survives in the debug directory (`D:\work\MK3\repos\branches\
-Master_1st\Bin\Final\MK_AGP3_FINAL.pdb`) and the PDB does not.
-
-So the function list is recovered, not read, and recovery is the slow and
-fallible step. pcrecomp's `disasm32.py` does it in rounds — direct branch
-targets, then `push ebp; mov ebp, esp` prologues, then a fixpoint over tail
-calls and thunks, then a probe of every pointer-shaped word in the data
-sections. That last pass is why it also refuses candidates: a value that merely
-*looks* like a code address, and does not decode as a run of instructions
-reaching a `ret`, is not a function.
 
 ### The graphics are two APIs at once
 

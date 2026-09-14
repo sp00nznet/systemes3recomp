@@ -34,6 +34,7 @@ Usage:
 
 import json
 import os
+import re
 import sys
 
 from .. import pcrecomp
@@ -200,6 +201,49 @@ def load_catalog(path, code_end=None, read_va=None, code_start=None):
     return funcs, iat
 
 
+_DISPATCH = re.compile(r"dispatch\(c, 0x([0-9A-F]{8})u\)")
+
+
+def _extent_to_next(va, funcs, code_end, cap=0x4000):
+    """How far a newly discovered entry may run.
+
+    To the next known start, because that is where some other function's body
+    begins - or `cap` bytes, because an address with nothing after it for a
+    megabyte is data, and lifting a megabyte of it helps nobody. The lifter
+    stops at the first `ret` in any case; this only bounds what it reads.
+    """
+    nxt = min((a for a in funcs if a > va), default=code_end)
+    return max(1, min(nxt, va + cap, code_end) - va)
+
+
+def _lift_round(lifter, funcs, pending, bodies, failed):
+    """Lift each address in `pending`, and return the addresses those bodies
+    dispatch to that still have none."""
+    reached = set()
+    for va in pending:
+        if va in bodies:
+            continue
+        size = funcs.get(va, 0)
+        if not size:
+            print("[!] no size for %#x, skipped" % va, file=sys.stderr)
+            continue
+        try:
+            body = lifter.lift_function(lifter.read_va(va, size), va)
+        except Exception as exc:
+            # One instruction the lifter cannot express must not cost the other
+            # 28,000 functions. The catalog is recovered by descent on a
+            # stripped binary, so some of its entries are data that decodes as
+            # something impossible - and a function that genuinely needs an
+            # instruction we do not have should abort when the game calls it,
+            # not when the game is built.
+            failed.append((va, exc))
+            body = ("/* FAILED TO LIFT: %s */\nvoid L_%08X(CPU *c)\n{\n"
+                    "    (void)c; abort();\n}" % (str(exc).replace("*/", "* /"), va))
+        bodies[va] = body
+        reached.update(int(h, 16) for h in _DISPATCH.findall(body))
+    return {a for a in reached if a not in bodies}
+
+
 def recompile(exe_path, catalog_path, outdir, addrs=None, split=400,
               split_lines=250000):
     """Lift an ES3 executable to C, at most `split` functions and
@@ -233,30 +277,51 @@ def recompile(exe_path, catalog_path, outdir, addrs=None, split=400,
     # function sizes span four orders of magnitude and the big ones cluster.
     # MSVC took it, slowly; a parallel build with several of those in flight is
     # what runs a machine out of memory.
-    chunks, cur, done, failed = [], list(header), [], []
+    # Lift, then close what the lifted code can reach, then lift that, until
+    # nothing is left open.
+    #
+    # close_dispatch_targets() works from the disassembly and catches most of
+    # it, but it cannot see the lifter's own arithmetic - the address a
+    # clamped extent falls through to, an arm of a jump table - and the
+    # mid-instruction check that follows it removes some of what it added. What
+    # survives is a `dispatch()` with no body, and the way you find out is the
+    # runtime saying `no lifted function at 0x0075619e` after ten minutes of a
+    # game running. That is a slow way to learn something the generated text
+    # already knows.
+    #
+    # So ask the text. Every literal `dispatch(c, 0x...)` in it is an address
+    # lifted code can jump to, and every one of those needs a body. An address
+    # that turns out to be nonsense costs one function nobody ever calls; an
+    # address that was real and missing costs the boot.
+    bodies, failed = {}, []
+    pending, rounds = list(targets), 0
+    while pending and rounds < 8:
+        rounds += 1
+        opened = _lift_round(lifter, funcs, pending, bodies, failed)
+        # Inside the code, or it is not an address the program can run. A
+        # function recovered out of a run of data decodes `call` instructions
+        # to wherever its bytes happen to point, and lifting 0x727a0f49 fails
+        # on the read rather than on anything useful.
+        lo = info.code_start or 0
+        pending = sorted(a for a in opened if lo <= a < info.code_end)
+        if pending:
+            print("[*] %d address(es) lifted code reaches had no body"
+                  % len(pending), file=sys.stderr)
+            for va in pending:
+                funcs[va] = _extent_to_next(va, funcs, info.code_end)
+    if pending:
+        print("[!] %d dispatch target(s) still open after %d rounds"
+              % (len(pending), rounds), file=sys.stderr)
+
+    done = sorted(bodies)
+    chunks, cur = [], list(header)
     cur_funcs = cur_lines = 0
-    for va in targets:
-        size = funcs.get(va, 0)
-        if not size:
-            print("[!] no size for %#x, skipped" % va, file=sys.stderr)
-            continue
-        try:
-            body = lifter.lift_function(lifter.read_va(va, size), va)
-        except Exception as exc:
-            # One instruction the lifter cannot express must not cost the other
-            # 28,000 functions. The catalog is recovered by descent on a
-            # stripped binary, so some of its entries are data that decodes as
-            # something impossible - and a function that genuinely needs an
-            # instruction we do not have should abort when the game calls it,
-            # not when the game is built.
-            failed.append((va, exc))
-            body = ("/* FAILED TO LIFT: %s */\nvoid L_%08X(CPU *c)\n{\n"
-                    "    (void)c; abort();\n}" % (str(exc).replace("*/", "* /"), va))
+    for va in done:
+        body = bodies[va]
         cur.append(body)
         cur.append("")
         cur_funcs += 1
         cur_lines += body.count("\n") + 2
-        done.append(va)
         if (split and cur_funcs >= split) or \
                 (split_lines and cur_lines >= split_lines):
             chunks.append(cur)

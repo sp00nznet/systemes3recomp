@@ -65,6 +65,7 @@ uint32_t guest_image_size(void);
  * Direct3D can catch anything. Every thread that runs lifted code needs it
  * once; for a worker thread that is its first crossing. */
 void es3_teb_cover(uint32_t lo, uint32_t hi);
+void es3_window_selftest(void);
 
 /* ---- the import boundary ----
  *
@@ -251,6 +252,14 @@ void dispatch_jmp(CPU *c, uint32_t va);
 /* Is `va` a function this build lifted? For a host that wants to check before
  * handing the guest a callback address. */
 int dispatch_has(uint32_t va);
+
+/* The guest function whose lifted body contains a host address - what a fault
+ * in two million lines of generated C needs to be legible. */
+uint32_t dispatch_owner(const void *host);
+
+/* ES3_WATCH_VA support - see crash.c. */
+int es3_watched(uint32_t va);
+unsigned es3_dispatch_count(void);
 
 /* ---- bring-up diagnostics (src/runtime/crash.c) ----
  *

@@ -23,6 +23,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -45,18 +46,67 @@
  *
  * The id comes from fs:[0x24] (TEB ClientId.UniqueThread) rather than
  * GetCurrentThreadId(), which is a call; this is one load. */
-#define TRAIL 4096
+/* A whole boot, not a moment of one.
+ * 4096 entries is about forty milliseconds of a game with twenty threads,
+ * and every question worth asking spans more than that - `did the init step
+ * run before the first frame` needs a hundred thousand. A million pairs is
+ * 8 MB of a memory-mapped file, which costs nothing until it is read. */
+#define TRAIL (1u << 20)
 static uint32_t  g_fallback[2 * TRAIL + 2];
 static uint32_t *g_ring = g_fallback;     /* [0]=count, [1]=stride, then pairs */
 static const CPU *g_cpu;
+
+/* How many times a real library called guest code directly - see the
+ * execute-violation handler. Worth knowing: each one is a callback this
+ * runtime did not thunk, and a page fault every time it happens. */
+static unsigned g_r2l_faults;
 
 #define RING_COUNT  g_ring[0]
 #define RING_TID(i) g_ring[2 + 2 * ((i) & (TRAIL - 1))]
 #define RING_VA(i)  g_ring[3 + 2 * ((i) & (TRAIL - 1))]
 
+/* ES3_WATCH_VA=5a7c90,5a80b0 - say when those guest functions are entered.
+ *
+ * The ring answers "how did it get here", which is the question you have after
+ * a fault. The question you have before one is "did this ever run, and did it
+ * run before that" - a null singleton is an initialiser that did not happen,
+ * and the update that trips over it is often a vtable slot with no static
+ * caller to read. Eight addresses, compared on every dispatch, only when the
+ * variable is set. */
+static uint32_t g_watch_va[8];
+static unsigned g_nwatch;
+static int g_watch_read;
+
+static void watch_va_init(void)
+{
+    const char *s = getenv("ES3_WATCH_VA");
+    g_watch_read = 1;
+    while (s && *s && g_nwatch < 8) {
+        char *end;
+        unsigned long v = strtoul(s, &end, 16);
+        if (end == s) break;
+        g_watch_va[g_nwatch++] = (uint32_t)v;
+        s = *end == ',' ? end + 1 : end;
+    }
+    if (g_nwatch)
+        fprintf(stderr, "[watch] %u guest address(es)\n", g_nwatch);
+}
+
+int es3_watched(uint32_t va)
+{
+    unsigned k;
+    if (!g_watch_read) watch_va_init();
+    for (k = 0; k < g_nwatch; k++)
+        if (g_watch_va[k] == va) return 1;
+    return 0;
+}
+
+unsigned es3_dispatch_count(void) { return RING_COUNT; }
+
 void es3_note_dispatch(uint32_t va)
 {
     unsigned i = RING_COUNT;
+
 #ifdef _WIN32
     RING_TID(i) = __readfsdword(0x24);
 #else
@@ -170,16 +220,123 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
     const EXCEPTION_RECORD *r = ep->ExceptionRecord;
     if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
         r->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION &&
-        r->ExceptionCode != EXCEPTION_PRIV_INSTRUCTION)
-        return EXCEPTION_CONTINUE_SEARCH;
+        r->ExceptionCode != EXCEPTION_PRIV_INSTRUCTION) {
+        /* Everything else, named once.
+         *
+         * A vectored handler sees every exception, including the ones the
+         * guest raises on purpose and catches itself - the C++ throw
+         * (0xE06D7363), the debugger's thread-name notice (0x406D1388),
+         * OutputDebugString's own (0x40010006). Those are normal and there
+         * are thousands of them, so this says each code once and declines.
+         *
+         * It is worth the line because "the process vanished" and "the guest
+         * raised something nobody caught" look identical from outside, and
+         * the last thing in the trail is then a RaiseException with no
+         * explanation after it. */
+        /* 0x406D1388 is "I am naming a thread", addressed to a debugger.
+         *
+         * There is no debugger, so nothing is listening, and the only thing
+         * that can happen is the guest's own `__except` catching it back. That
+         * handler is a guest address, and Windows calls a handler as real code
+         * - so it would run the ORIGINAL bytes at that address, off a CPU
+         * struct it knows nothing about, and the thread never comes back to
+         * lifted code. The main thread went quiet exactly there.
+         *
+         * Thunking SEH handlers the way hybrid_thunk() handles callbacks is
+         * the real answer and is a subsystem, not a line. This one exception
+         * does not need it: resume, and RaiseException simply returns, which
+         * is what it does on a machine with nobody watching. Every other code
+         * is still the guest's to catch. */
+        if (r->ExceptionCode == 0x406D1388u) return EXCEPTION_CONTINUE_EXECUTION;
 
-    es3_report_state("the guest faulted");
-    fprintf(stderr, "  code   %08lX at host %p\n",
-            (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+        static volatile LONG said[8];
+        int i;
+        for (i = 0; i < 8; i++) {
+            if ((DWORD)said[i] == r->ExceptionCode) break;
+            if (!said[i] &&
+                InterlockedCompareExchange(&said[i], (LONG)r->ExceptionCode, 0) == 0) {
+                fprintf(stderr, "[seh] guest raised %08lX at %p (first time; "
+                                "declining - it is the guest's to catch)\n",
+                        (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+                fflush(stderr);
+                break;
+            }
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    /*
+     * Real code tried to execute guest code. Run the lifted version instead.
+     *
+     * guest_load() maps the image without execute for exactly this: any
+     * pointer to guest code that reached a real library unthunked arrives
+     * here, as an execute violation at the address that was called, with the
+     * caller's registers in the CONTEXT and its return address on the stack.
+     *
+     * That is everything a dispatch needs. Build a CPU from the context, run
+     * the lifted function, put the registers back, and resume at the return
+     * address the caller pushed - which the lifted `ret` has already stepped
+     * esp past, so esp comes back from the CPU rather than being adjusted
+     * here.
+     *
+     * The alternative is a thunk per callback, and the callbacks that need one
+     * are not all arguments: a COM interface the game implements is a vtable
+     * of guest addresses handed to a library, with nothing to wrap. This is
+     * the same trade hybrid_thunk() makes, made once for every case at once,
+     * at the cost of a first-time page fault per distinct callback.
+     */
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        r->NumberParameters >= 2 && r->ExceptionInformation[0] == 8) {
+        uint32_t va = (uint32_t)r->ExceptionInformation[1];
+        uint32_t base = guest_image_base();
+        if (va >= base && va < base + guest_image_size() && dispatch_has(va)) {
+            CONTEXT *x = ep->ContextRecord;
+            uint32_t ret = *(uint32_t *)(uintptr_t)x->Esp;
+            CPU cpu;
+            memset(&cpu, 0, sizeof cpu);
+            cpu.eax = x->Eax; cpu.ecx = x->Ecx; cpu.edx = x->Edx; cpu.ebx = x->Ebx;
+            cpu.esp = x->Esp; cpu.ebp = x->Ebp; cpu.esi = x->Esi; cpu.edi = x->Edi;
+            cpu.fpu_top = 0;
+
+            g_r2l_faults++;
+            if (g_r2l_faults <= 8)
+                fprintf(stderr, "[r2l] real code called guest %08X directly "
+                                "(unthunked callback %u) - dispatching it\n",
+                        va, g_r2l_faults);
+
+            dispatch(&cpu, va);
+
+            x->Eax = cpu.eax; x->Ecx = cpu.ecx; x->Edx = cpu.edx; x->Ebx = cpu.ebx;
+            x->Esp = cpu.esp; x->Ebp = cpu.ebp; x->Esi = cpu.esi; x->Edi = cpu.edi;
+            x->Eip = ret;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+
+    /* The address first, the trail after.
+     *
+     * Twenty-four lines of trail is long enough that a second thread faulting
+     * mid-report, or the process being torn down, truncates the tail - and the
+     * tail was where the address used to be. The trail can be reconstructed
+     * from es3_trail.bin afterwards; the faulting address cannot. */
+    {
+        uint32_t owner = dispatch_owner(r->ExceptionAddress);
+        fprintf(stderr, "\n=== the guest faulted: %08lX at host %p",
+                (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+        if (owner)
+            fprintf(stderr, ", inside guest %08X ===\n"
+                            "    (the nearest lifted body at or below it - a"
+                            " runtime helper reads as its caller)\n", owner);
+        else
+            fprintf(stderr, " - not in any lifted body ===\n");
+        fflush(stderr);
+    }
 
     if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
         r->NumberParameters >= 2) {
-        uint32_t bad = (uint32_t)r->ExceptionInformation[1];
+        uint32_t bad;
+        es3_report_state("how it got there");
+        bad = (uint32_t)r->ExceptionInformation[1];
         static const char *const how[] = { "read", "written", "?", "?",
                                            "?", "?", "?", "?", "executed" };
         ULONG_PTR k = r->ExceptionInformation[0];

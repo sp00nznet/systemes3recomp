@@ -98,6 +98,44 @@ void es3_teb_cover(uint32_t lo, uint32_t hi)
     if (lo < __readfsdword(0x08)) __writefsdword(0x08, lo);   /* StackLimit */
     if (hi > __readfsdword(0x04)) __writefsdword(0x04, hi);   /* StackBase  */
 }
+
+/*
+ * Can this process make a window at all?
+ *
+ * The game's two CreateWindowExW calls both return NULL with
+ * ERROR_NOT_ENOUGH_MEMORY, and no window procedure is entered before they do -
+ * so nothing about the guest's class or its callback is reached. That leaves
+ * the process itself as the suspect, and one plain Win32 window settles it:
+ * if this fails too, the cause is something this runtime did to the process
+ * (the relaunch, the reserved image range, the TEB) and not the game.
+ *
+ * Called from guest_load, before a single guest instruction runs.
+ */
+void es3_window_selftest(void)
+{
+    WNDCLASSW wc;
+    HWND h;
+    ATOM a;
+
+    memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"es3_window_selftest";
+    SetLastError(0);
+    a = RegisterClassW(&wc);
+    fprintf(stderr, "[wintest] RegisterClassW = %04X (error %lu)\n",
+            a, GetLastError());
+
+    SetLastError(0);
+    h = CreateWindowExW(0, L"es3_window_selftest", L"es3", WS_OVERLAPPEDWINDOW,
+                        CW_USEDEFAULT, CW_USEDEFAULT, 320, 240,
+                        NULL, NULL, GetModuleHandleW(NULL), NULL);
+    fprintf(stderr, "[wintest] CreateWindowExW = %p (error %lu)\n",
+            (void *)h, GetLastError());
+    if (h) DestroyWindow(h);
+    UnregisterClassW(L"es3_window_selftest", GetModuleHandleW(NULL));
+}
+
 #endif
 
 static void *reserve(uint32_t addr, uint32_t size)
@@ -191,7 +229,11 @@ static int relaunch_reserving(uint32_t base, uint32_t size)
 
 int guest_load(const char *exe_path)
 {
-    FILE *f = fopen(exe_path, "rb");
+    FILE *f;
+#ifdef _WIN32
+    if (getenv("ES3_WINTEST")) es3_window_selftest();
+#endif
+    f = fopen(exe_path, "rb");
     if (!f) { perror(exe_path); return -1; }
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
@@ -255,6 +297,39 @@ int guest_load(const char *exe_path)
         memcpy((void *)(uintptr_t)(g_base + vaddr), img + roff, rsize);
     }
     free(img);
+
+#ifdef _WIN32
+    /*
+     * And now take execute away from all of it.
+     *
+     * The game's original machine code is mapped, because data and code share
+     * pages and the lifted code reads its own constants out of them. What must
+     * never happen is the host EXECUTING it: those bytes reach an IAT full of
+     * sentinels, and the fault that follows names an import nobody called with
+     * no way back to who did.
+     *
+     * It happens whenever a real library is handed a pointer to guest code
+     * that this runtime did not thunk. The window procedure and the thread
+     * entry are arguments, so hle_callback.c can wrap them; a COM interface
+     * the game implements is not - Mario Kart hands D3DX10's thread pump an
+     * ID3DX10DataLoader whose vtable is seven guest addresses, and D3DX10
+     * calls them on its own worker threads. There is no argument to wrap.
+     *
+     * With the pages non-executable, that call faults with an execute
+     * violation at a guest address instead - which crash.c turns back into a
+     * dispatch. One handler covers every unthunked callback there will ever
+     * be, including the ones nobody has found yet.
+     */
+    {
+        DWORD old;
+        if (!getenv("ES3_GUEST_EXECUTABLE") &&
+            !VirtualProtect((LPVOID)(uintptr_t)g_base, image_size,
+                            PAGE_READWRITE, &old))
+            fprintf(stderr, "[guest] could not take execute off the image (%lu) - "
+                            "an unthunked callback will fault on a sentinel "
+                            "instead of being dispatched\n", GetLastError());
+    }
+#endif
 
     /* Point every IAT slot at its sentinel. This is what turns the game's
      * `call dword ptr [__imp_CreateFileW]` into a call the runtime answers. */
@@ -329,13 +404,21 @@ int guest_load(const char *exe_path)
      * runs each nested call on a private arena rather than the host stack -
      * the host's own C frames keep descending while lifted code runs, and the
      * two would interleave. See src/runtime/hle_callback.c for who needs it. */
-    /* A megabyte per crossing, out of sixty-four. The defaults are 32 KB and
+    /* A megabyte per crossing, out of sixteen. The defaults are 32 KB and
      * 8 MB, and 32 KB is not a stack: a worker thread that enters lifted code
      * through a callback runs the game's own call graph on that frame, and
      * real library code called back out of it runs there too. Mario Kart's
      * eight engine threads ran off the end of theirs and the process died on a
-     * guard page nobody could grow. */
-    if (!hybrid_init(es3_hybrid_invoke, 1u << 20, 64u << 20)) {
+     * guard page nobody could grow.
+     *
+     * Sixteen and not sixty-four because the arena is per thread and reserved
+     * whole: this game has seventeen threads crossing the boundary, and at
+     * 64 MB each they ran the 32-bit address space out. The thread that lost
+     * the race got no arena, returned 0 from the window procedure, and
+     * CreateWindowExW reported ERROR_NOT_ENOUGH_MEMORY - which is true, and
+     * about the wrong thing. Sixteen megabytes is sixteen nested crossings,
+     * and only nesting needs the depth. */
+    if (!hybrid_init(es3_hybrid_invoke, 1u << 20, 16u << 20)) {
         fprintf(stderr, "cannot set up the real -> lifted boundary\n");
         return -1;
     }

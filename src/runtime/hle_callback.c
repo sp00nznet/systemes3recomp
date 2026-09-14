@@ -72,14 +72,18 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
      * and the lifted->real direction is still single-threaded (hybrid RULE 4). */
     es3_teb_cover(r->esp - (1u << 20), r->esp + 0x1000u);
     {
-        static volatile LONG seen[16];
+        /* Sixty-four, because this game has more than sixteen and the ones
+         * past the end were the interesting ones - a thread nobody knew about
+         * running an update before its subsystem had been built. With the
+         * address it came in at, so `ES3_WATCH_VA` has something to aim at. */
+        static volatile LONG seen[64];
         LONG self = (LONG)GetCurrentThreadId();
         int i;
-        for (i = 0; i < 16; i++) {
+        for (i = 0; i < 64; i++) {
             if (seen[i] == self) break;
             if (!seen[i] && InterlockedCompareExchange(&seen[i], self, 0) == 0) {
-                fprintf(stderr, "[hybrid] thread %ld is now calling back into "
-                                "lifted code (%d so far)\n", self, i + 1);
+                fprintf(stderr, "[hybrid] thread %ld enters lifted code at "
+                                "%08X (%d so far)\n", self, ova, i + 1);
                 break;
             }
         }
@@ -92,9 +96,16 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
      * whether CreateWindowEx succeeds: returning 0 to WM_NCCREATE (0x0081)
      * makes it fail, and it reports ERROR_NOT_ENOUGH_MEMORY when it does. */
     {
-        static volatile LONG shown;
-        int show = getenv("ES3_TRACE_CALLS") &&
-                   InterlockedIncrement(&shown) <= 24;
+        /* Per callback address, not per process. One worker-thread entry point
+         * called by sixteen threads in a spin will otherwise eat the whole
+         * budget before the interesting one crosses even once. */
+        static uint32_t seen[256];
+        static unsigned char hits[256];
+        int show = 0, k;
+        if (getenv("ES3_TRACE_CALLS")) {
+            for (k = 0; k < 256 && seen[k] && seen[k] != ova; k++) {}
+            if (k < 256) { seen[k] = ova; show = hits[k]++ < 8; }
+        }
         if (show)
             fprintf(stderr, "[r2l] %08X(%08X, %08X, %08X, %08X)", ova,
                     real_args[0], real_args[1], real_args[2], real_args[3]);
@@ -225,9 +236,24 @@ static void wrap_callback_field(CPU *c, HleId id, unsigned field_off)
         if (proc >= base && proc < base + guest_image_size() &&
             !getenv("ES3_NO_WNDPROC_THUNK"))
             wr32(sp + field_off, es3_callback(proc));
+
+        /* And the hInstance three fields along - offset 16 in a WNDCLASS,
+         * 20 in a WNDCLASSEX, which is field_off + 12 either way.
+         *
+         * It has to move with the one hle_native.c substitutes in
+         * CreateWindowEx, because a class is identified by (atom, hInstance):
+         * register under the guest's image base and create with the host's and
+         * the lookup fails with ERROR_CANNOT_FIND_WND_CLASS, which is a
+         * different and equally opaque way to get no window. */
+        if (rd32(sp + field_off + 12) == base && !getenv("ES3_NO_HINSTANCE_FIX"))
+            wr32(sp + field_off + 12,
+                 (uint32_t)(uintptr_t)GetModuleHandleW(NULL));
         if (getenv("ES3_TRACE_CALLS")) {
             unsigned k;
-            fprintf(stderr, "[wndclass] %s @%08X:", hle_name(id), sp);
+            uint32_t thunk = rd32(sp + field_off), tova = 0;
+            hybrid_thunk_target(thunk, &tova);
+            fprintf(stderr, "[wndclass] %s @%08X: wndproc %08X is %08X:",
+                    hle_name(id), sp, thunk, tova);
             for (k = 0; k < 12; k++) fprintf(stderr, " %08X", rd32(sp + 4 * k));
             fprintf(stderr, "\n");
         }
@@ -252,10 +278,39 @@ static void hle_set_window_long(CPU *c, HleId id)
  * on threads below. */
 static void hle_create_thread(CPU *c, HleId id) { wrap_callback_arg(c, id, 2); }
 
+/* SetWindowsHookEx(idHook, lpfn, hmod, threadId) - the callback is argument 1.
+ * EnumWindows(lpEnumFunc, lParam) - argument 0. */
+static void hle_hook_proc(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
+static void hle_enum_windows(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
+
 static void hle_onexit(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 static void hle_seh_filter(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 static void hle_signal(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
 static void hle_qsort(CPU *c, HleId id) { wrap_callback_arg(c, id, 3); }
+
+/*
+ * What the game says about itself.
+ *
+ * An ES3 title is a debug-friendly build shipped to a cabinet: it narrates its
+ * own startup through OutputDebugString, and on the cabinet that went to a
+ * kernel debugger nobody was watching. Here it is the only account of the
+ * boot written by someone who knows what the boot is supposed to do - which
+ * subsystem is coming up, which file it wants, which device it did not find.
+ *
+ * Forwarded as well as echoed: the real call raises and catches
+ * DBG_PRINTEXCEPTION_C, and the guest's own SEH frames are involved.
+ */
+static void hle_debug_string(CPU *c, HleId id)
+{
+    uint32_t p = A32(0);
+    if (p) {
+        if (hle_name(id)[strlen(hle_name(id)) - 1] == 'W')
+            fprintf(stderr, "[game] %ls\n", (const wchar_t *)(uintptr_t)p);
+        else
+            fprintf(stderr, "[game] %s\n", (const char *)(uintptr_t)p);
+    }
+    hle_call_native(c, id);
+}
 
 /* ---- the ways a CRT gives up ----
  *
@@ -291,8 +346,20 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("RegisterClassExA", hle_register_class_ex);
     ptrs += (unsigned)hle_bind("SetWindowLongW", hle_set_window_long);
     ptrs += (unsigned)hle_bind("SetWindowLongA", hle_set_window_long);
+    /* A hook procedure is a window procedure by another name: USER32 calls it
+     * on the guest's behalf, from inside its own message dispatch, and an
+     * unthunked one runs the original bytes - which reach their IAT and fault
+     * on a sentinel with nothing in the trail to say who called them. Mario
+     * Kart installs one and it took a fault at `ReleaseSemaphore`'s sentinel
+     * to find it. */
+    ptrs += (unsigned)hle_bind("SetWindowsHookExW", hle_hook_proc);
+    ptrs += (unsigned)hle_bind("SetWindowsHookExA", hle_hook_proc);
+    ptrs += (unsigned)hle_bind("EnumWindows", hle_enum_windows);
     ptrs += (unsigned)hle_bind("CreateThread", hle_create_thread);
     ptrs += (unsigned)hle_bind("_beginthreadex", hle_create_thread);
+
+    hle_bind("OutputDebugStringA", hle_debug_string);
+    hle_bind("OutputDebugStringW", hle_debug_string);
 
     exits += (unsigned)hle_bind("abort", hle_give_up);
     exits += (unsigned)hle_bind("exit", hle_give_up);

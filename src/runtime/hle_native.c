@@ -158,6 +158,22 @@ static int g_trace = -1;
  * one. A window that comes back 0x0 with a 0x0 rectangle is not a mystery once
  * you can see the arguments that made it. */
 static unsigned char g_watch[HLE_COUNT];
+
+/* The libraries where a 32-bit argument equal to the guest's image base can
+ * only be an HINSTANCE. USER32, DINPUT8, GDI32 and the D3D family take module
+ * handles and never take a pointer into a PE header as data. KERNEL32 does
+ * both - VirtualQuery(0x00400000) is a sincere question about the guest image -
+ * so it is deliberately not on the list. */
+static int takes_hinstance(const char *dll)
+{
+    return _strnicmp(dll, "USER32", 6) == 0 ||
+           _strnicmp(dll, "DINPUT", 6) == 0 ||
+           _strnicmp(dll, "GDI32",  5) == 0 ||
+           _strnicmp(dll, "d3d",    3) == 0;
+}
+
+/* Said once per import, not once per call. */
+static unsigned char g_hinst_said[HLE_COUNT];
 static int g_watch_set;
 
 static void watch_init(void)
@@ -204,7 +220,62 @@ void hle_call_native(CPU *c, HleId id)
     r.eax = c->eax; r.ecx = c->ecx; r.edx = c->edx; r.ebx = c->ebx;
     r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;
 
+    /*
+     * The guest's HINSTANCE is not a module this process loaded.
+     *
+     * An MSVC image knows its own base as `__ImageBase`, a link-time constant,
+     * and hands it to Windows wherever an HINSTANCE is wanted - WinMain's
+     * first argument, a window class, a resource lookup. Here that constant is
+     * 0x00400000, which in this process is a region VirtualAlloc handed out.
+     * The loader has never heard of it, so an API that validates it says so:
+     * DirectInput8Create returns E_INVALIDARG, the game's input initialiser
+     * returns false, and the whole chain of subsystem opens after it is
+     * skipped - which surfaces, thirty thousand calls later, as a task
+     * updating through a null singleton.
+     *
+     * So substitute this process's own module handle. The image base is the
+     * PE header; nothing passes a pointer to that as data, and if something
+     * ever does, ES3_NO_HINSTANCE_FIX turns this off and the symptom comes
+     * straight back.
+     *
+     * Resources are the honest caveat: a FindResource against the host's
+     * handle looks in the host's image, which has none of the game's. No ES3
+     * title has asked yet - they ship their data in files - and when one does,
+     * the answer is to serve the guest image's own resource directory rather
+     * than to stop substituting.
+     */
     if (!g_watch_set) watch_init();
+    {
+        static int off = -1;
+        uint32_t gbase = guest_image_base();
+        int purge = hle_purge(id);
+        int na = purge / 4;
+        int k;
+        if (off < 0) off = getenv("ES3_NO_HINSTANCE_FIX") != NULL;
+        /* Only where an HINSTANCE is what the argument means, and only where
+         * the purge says exactly how many arguments there are.
+         *
+         * The first attempt applied it everywhere and guessed eight arguments
+         * for anything cdecl. `memset(dst, 0, n)` has three, the fourth slot
+         * on the guest stack happened to hold 0x00400000, and rewriting it
+         * corrupted the caller's frame - a worse bug than the one being fixed,
+         * arriving somewhere else entirely. KERNEL32 stays out for the same
+         * reason from the other direction: VirtualQuery(0x00400000) is a
+         * sincere question about the guest image and must be left alone. */
+        if (off || purge <= 0 || !takes_hinstance(hle_dll(id))) na = 0;
+        for (k = 0; k < na && k < 16; k++) {
+            if (A32(k) != gbase) continue;
+            if (!g_hinst_said[id]) {
+                g_hinst_said[id] = 1;
+                fprintf(stderr, "[hle] %s was given the guest's own image base "
+                                "as argument %d - passing this process's module "
+                                "handle instead\n", hle_name(id), k);
+            }
+            wr32(c->esp + 4 + 4 * (uint32_t)k,
+                 (uint32_t)(uintptr_t)GetModuleHandleW(NULL));
+        }
+    }
+
     if (g_watch[id]) {
         int purge = hle_purge(id);
         int na = purge > 0 ? purge / 4 : 4;
@@ -215,7 +286,12 @@ void hle_call_native(CPU *c, HleId id)
         fprintf(stderr, ")");
     }
 
-    hybrid_call_machine(&r, (uint32_t)(uintptr_t)g_native[id]);
+    {
+        /* Clear it first, or the traced error is whatever the last unrelated
+         * call left behind - which is how a red herring gets into a log. */
+        if (g_watch[id]) SetLastError(0);
+        hybrid_call_machine(&r, (uint32_t)(uintptr_t)g_native[id]);
+    }
 
     c->eax = r.eax;
     c->edx = r.edx;

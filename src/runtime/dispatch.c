@@ -16,6 +16,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "es3_rt.h"
 #include "hybrid.h"
@@ -46,11 +50,63 @@ static void (*find(uint32_t va))(CPU *)
 
 int dispatch_has(uint32_t va) { return find(va) != NULL; }
 
+/*
+ * Which guest function is the host code at `host` part of?
+ *
+ * A fault in lifted code reports a host address, and a host address in a
+ * thirty-megabyte generated image says nothing at all. But the same table that
+ * answers dispatch() holds both halves of the mapping, so the answer is a
+ * search over it - by function pointer instead of by VA.
+ *
+ * It has to be a linear scan because the table is sorted by guest VA and the
+ * linker lays the bodies out in whatever order it likes. Thirty thousand
+ * comparisons, once, while the process is already dying.
+ *
+ * The nearest body at or below the address, which is the containing one unless
+ * the fault is in a runtime helper between two of them - so the result is a
+ * guess, and the caller says so.
+ */
+uint32_t dispatch_owner(const void *host)
+{
+    uintptr_t a = (uintptr_t)host, best = 0;
+    uint32_t va = 0;
+    size_t i;
+    for (i = 0; i < N; i++) {
+        uintptr_t f = (uintptr_t)g_table[i].fn;
+        if (f <= a && f > best) { best = f; va = g_table[i].va; }
+    }
+    return va;
+}
+
+static void dispatch_inner(CPU *c, uint32_t va);
+
 void dispatch(CPU *c, uint32_t va)
+{
+    es3_note_dispatch(va);
+
+    /* ES3_WATCH_VA, reported here rather than in the ring, because here there
+     * is a CPU: the return address the caller pushed is the top of the guest
+     * stack, and "who called this" is most of what the question was. A
+     * function reached through a vtable has no caller you can grep for. */
+    if (es3_watched(va)) {
+        uint32_t from = rd32(c->esp), at = es3_dispatch_count();
+        fprintf(stderr, "[watch] %08X entered from %08X (thread %lu, "
+                        "dispatch %u)\n", va, from, GetCurrentThreadId(), at);
+        /* And what it answered. An init step that returns a bool is the whole
+         * question when the chain after it never runs. */
+        dispatch_inner(c, va);
+        fprintf(stderr, "[watch] %08X returned %08X to %08X (thread %lu, "
+                        "dispatch %u)\n", va, c->eax, from,
+                        GetCurrentThreadId(), es3_dispatch_count());
+        return;
+    }
+    dispatch_inner(c, va);
+}
+
+static void dispatch_inner(CPU *c, uint32_t va)
 {
     uint32_t ova;
 
-    es3_note_dispatch(va);
     if (HLE_IS_ADDR(va)) { hle_call(c, HLE_ID_OF(va)); return; }
 
     /* A thunk address, not a guest VA. Lifted code that reads a slot this
