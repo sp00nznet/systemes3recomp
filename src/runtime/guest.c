@@ -181,6 +181,103 @@ static DWORD WINAPI screen_watchdog(void *unused)
     }
 }
 
+/*
+ * Is there a Direct3D display in this session at all?
+ *
+ * This is the first thing to know about a recompiled game that shows nothing,
+ * and it has nothing to do with the recompilation. A title built on DXUT -
+ * which this one is - enumerates adapters, skips any DXGI adapter reporting no
+ * outputs, and if nothing is left puts up a modal
+ *
+ *     mkart3 - Could not find any compatible Direct3D devices.
+ *
+ * and waits for an OK that a cabinet was never going to give it. From outside
+ * that is a hung process with a black window, which is indistinguishable from
+ * a hundred other failures, and it cost most of a session to tell apart.
+ *
+ * Over a Remote Desktop session there is no display device to find: on this
+ * machine Direct3DCreate9 reports zero adapters, Direct3DCreate9Ex returns
+ * D3DERR_NOTAVAILABLE, and DXGI enumerates six adapters with zero outputs
+ * between them. The game is right and there is nothing to fix in it.
+ *
+ * So ask the same questions the game is about to ask, before it asks them, and
+ * say the answer in one line. Through LoadLibrary and the vtable indices
+ * rather than d3d9.h and dxgi.h, so the runtime gains no build dependency for
+ * a diagnostic.
+ */
+static int d3d9_adapters(void)
+{
+    HMODULE m = LoadLibraryA("d3d9.dll");
+    void *(__stdcall * create)(unsigned);
+    void *d3d;
+    int n;
+    if (!m) return -1;
+    create = (void *(__stdcall *)(unsigned))GetProcAddress(m, "Direct3DCreate9");
+    if (!create) return -1;
+    d3d = create(32);                               /* D3D_SDK_VERSION */
+    if (!d3d) return 0;
+    /* IDirect3D9: 4 GetAdapterCount, 2 Release. */
+    n = (int)(*(unsigned(__stdcall ***)(void *))d3d)[4](d3d);
+    (*(unsigned long(__stdcall ***)(void *))d3d)[2](d3d);
+    return n;
+}
+
+static int dxgi_outputs(int *adapters)
+{
+    HMODULE m = LoadLibraryA("dxgi.dll");
+    long(__stdcall * create)(const GUID *, void **);
+    GUID iid = { 0x7b7166ec, 0x21c7, 0x44ae,
+                 { 0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69 } };
+    void *f = NULL, *a = NULL;
+    unsigned i = 0, outs = 0;
+
+    *adapters = 0;
+    if (!m) return -1;
+    create = (long(__stdcall *)(const GUID *, void **))
+             GetProcAddress(m, "CreateDXGIFactory");
+    if (!create || create(&iid, &f) < 0) return -1;
+
+    /* IDXGIFactory: 7 EnumAdapters.  IDXGIAdapter: 7 EnumOutputs. */
+    while ((*(long(__stdcall ***)(void *, unsigned, void **))f)[7](f, i, &a) >= 0) {
+        void *o = NULL;
+        unsigned j = 0;
+        while ((*(long(__stdcall ***)(void *, unsigned, void **))a)[7](a, j, &o) >= 0) {
+            (*(unsigned long(__stdcall ***)(void *))o)[2](o);
+            j++; outs++;
+        }
+        (*(unsigned long(__stdcall ***)(void *))a)[2](a);
+        i++;
+    }
+    (*(unsigned long(__stdcall ***)(void *))f)[2](f);
+    *adapters = (int)i;
+    return (int)outs;
+}
+
+void es3_report_display(void)
+{
+    int d9 = d3d9_adapters(), adapters = 0, outs = dxgi_outputs(&adapters);
+    int remote = GetSystemMetrics(SM_REMOTESESSION);
+
+    if (d9 > 0 || outs > 0) {
+        fprintf(stderr, "[display] Direct3D 9 sees %d adapter(s); DXGI sees %d "
+                        "adapter(s) with %d output(s).\n", d9, adapters, outs);
+        return;
+    }
+    fprintf(stderr,
+        "\n[display] THERE IS NO DIRECT3D DISPLAY IN THIS SESSION.\n"
+        "          Direct3D 9 reports %d adapter(s); DXGI reports %d adapter(s)\n"
+        "          with %d output(s) between them.%s\n"
+        "          The game is built on DXUT, which skips an adapter that has\n"
+        "          no output, finds nothing left, and puts up a modal\n"
+        "          \"Could not find any compatible Direct3D devices\" that\n"
+        "          nothing is going to click. It will not draw anything here,\n"
+        "          and that is the session rather than the port: run it on the\n"
+        "          console, on a session with a display attached.\n\n",
+        d9, adapters, outs,
+        remote ? "  This is a remote session." : "");
+    fflush(stderr);
+}
+
 void es3_start_screen_watchdog(void)
 {
     HANDLE t;
@@ -370,6 +467,7 @@ int guest_load(const char *exe_path)
     FILE *f;
 #ifdef _WIN32
     es3_start_screen_watchdog();
+    es3_report_display();
     if (getenv("ES3_WINTEST")) es3_window_selftest();
 #endif
     f = fopen(exe_path, "rb");

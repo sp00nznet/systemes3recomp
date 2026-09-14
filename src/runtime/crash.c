@@ -244,7 +244,7 @@ void es3_report_memory(void)
  * alive and drawing nothing calls for.
  */
 #ifdef _WIN32
-static const char *module_at(uint32_t eip, int *ours)
+static const char *module_at(uint32_t eip, int *ours, uint32_t *base)
 {
     static char name[80];
     static wchar_t w[MAX_PATH];
@@ -252,9 +252,11 @@ static const char *module_at(uint32_t eip, int *ours)
     const wchar_t *leaf;
 
     *ours = 0;
+    *base = 0;
     if (!VirtualQuery((LPCVOID)(uintptr_t)eip, &mi, sizeof mi)) return "?";
     if (mi.Type != MEM_IMAGE)
         return mi.State == MEM_COMMIT ? "private code" : "unmapped";
+    *base = (uint32_t)(uintptr_t)mi.AllocationBase;
     if (mi.AllocationBase == (void *)GetModuleHandleW(NULL)) *ours = 1;
     if (!GetModuleFileNameW((HMODULE)mi.AllocationBase, w, MAX_PATH))
         return "an image";
@@ -288,6 +290,68 @@ static uint32_t last_va_on(unsigned long tid, uint32_t *import_va)
     return 0;
 }
 
+/* ES3_PEEK=959b0c,930094 - guest globals, printed with every thread report.
+ *
+ * A recompiled game keeps its state where the original kept it, so a static
+ * address out of the disassembly is still the right address at run time, and
+ * printing one is usually cheaper than working out which lifted function to
+ * instrument. As a word, as a float, and as the word it points at, because
+ * which of those it is is the thing being asked.
+ */
+static uint32_t g_peek[8];
+static unsigned g_npeek;
+static int g_peek_read;
+
+static void peek_init(void)
+{
+    const char *e = getenv("ES3_PEEK");
+    g_peek_read = 1;
+    while (e && *e && g_npeek < 8) {
+        char *end;
+        unsigned long v = strtoul(e, &end, 16);
+        if (end == e) break;
+        g_peek[g_npeek++] = (uint32_t)v;
+        e = *end == ',' ? end + 1 : end;
+    }
+}
+
+/* Without IsBadReadPtr, which probes by faulting: every call raises a
+ * first-chance access violation, the vectored handler prints it, and the
+ * diagnostic fills the log with reports of itself. */
+static int readable(uint32_t a, size_t n)
+{
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery((LPCVOID)(uintptr_t)a, &mi, sizeof mi)) return 0;
+    if (mi.State != MEM_COMMIT) return 0;
+    if (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
+    return a + n <= (uint32_t)(uintptr_t)mi.BaseAddress + (uint32_t)mi.RegionSize;
+}
+
+static void report_peeks(void)
+{
+    unsigned k;
+    if (!g_peek_read) peek_init();
+    for (k = 0; k < g_npeek; k++) {
+        uint32_t a = g_peek[k], v;
+        float f;
+        if (!readable(a, 4)) {
+            fprintf(stderr, "  peek %08X  unreadable\n", a);
+            continue;
+        }
+        v = *(const uint32_t *)(uintptr_t)a;
+        memcpy(&f, &v, 4);
+        fprintf(stderr, "  peek %08X  = %08X  %.6g", a, v, (double)f);
+        if (v >= 0x10000u && readable(v, 8)) {
+            uint32_t p0 = ((const uint32_t *)(uintptr_t)v)[0];
+            uint32_t p1 = ((const uint32_t *)(uintptr_t)v)[1];
+            float f1;
+            memcpy(&f1, &p1, 4);
+            fprintf(stderr, "   -> [0]=%08X [4]=%08X (%.6g)", p0, p1, (double)f1);
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
 void es3_report_threads(void)
 {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -311,7 +375,8 @@ void es3_report_threads(void)
         if (SuspendThread(h) != (DWORD)-1) {
             if (GetThreadContext(h, &ctx)) {
                 int ours = 0;
-                const char *mod = module_at((uint32_t)ctx.Eip, &ours);
+                uint32_t mbase = 0;
+                const char *mod = module_at((uint32_t)ctx.Eip, &ours, &mbase);
                 n++;
                 /* Resume before printing: fprintf takes a lock the suspended
                  * thread may be holding, and deadlocking the diagnostic is a
@@ -323,19 +388,34 @@ void es3_report_threads(void)
                     const char *tag =
                         te.th32ThreadID == g_guest_tid ? "  <- the guest" :
                         te.th32ThreadID == g_main_tid  ? "  <- host main" : "";
+                    /* The host Eip as well as the guess. dispatch_owner() is
+                     * the nearest lifted body at or below an address, so a
+                     * thread inside a runtime helper - or inside a lifted
+                     * function the linker placed after that helper - reads as
+                     * whichever body sorts below it, which is not the same
+                     * claim. Sampling the raw address twice says more than
+                     * trusting the name once. */
                     if (ours)
-                        fprintf(stderr, "  t%-6lu running   lifted %08X%s\n",
-                                te.th32ThreadID,
+                        fprintf(stderr, "  t%-6lu running   %08lX  near lifted "
+                                        "%08X%s\n",
+                                te.th32ThreadID, ctx.Eip,
                                 dispatch_owner((const void *)(uintptr_t)ctx.Eip),
                                 tag);
+                    /* module+offset, not just the module. "ntdll.dll" is the
+                     * same answer for every parked thread; the offset is what
+                     * a map of that DLL's exports turns into a name. */
                     else if (imp)
-                        fprintf(stderr, "  t%-6lu in %-11s waiting in %s, "
+                        fprintf(stderr, "  t%-6lu in %s+0x%-6X waiting in %s, "
                                         "last guest %08X%s\n",
                                 te.th32ThreadID, mod,
+                                (unsigned)((uint32_t)ctx.Eip - mbase),
                                 hle_name(HLE_ID_OF(imp)), last, tag);
                     else
-                        fprintf(stderr, "  t%-6lu in %-11s last guest %08X%s\n",
-                                te.th32ThreadID, mod, last, tag);
+                        fprintf(stderr, "  t%-6lu in %s+0x%-6X last guest "
+                                        "%08X%s\n",
+                                te.th32ThreadID, mod,
+                                (unsigned)((uint32_t)ctx.Eip - mbase),
+                                last, tag);
                 }
                 continue;
             }
@@ -345,6 +425,7 @@ void es3_report_threads(void)
     }
     CloseHandle(snap);
     fprintf(stderr, "  %u thread(s)\n", n);
+    report_peeks();
     fflush(stderr);
 }
 #else

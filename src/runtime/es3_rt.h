@@ -72,6 +72,7 @@ void es3_window_selftest(void);
  * nothing. See guest.c. */
 void es3_start_screen_watchdog(void);
 void es3_enter_guest(CPU *c);
+void es3_report_display(void);
 
 /* ---- the import boundary ----
  *
@@ -340,6 +341,10 @@ void es3_watch_cpu(const CPU *c);
  * that has noticed something impossible. */
 void es3_report_state(const char *why);
 void es3_report_threads(void);
+
+/* An argument that is really a string - ASCII or UTF-16, NULL if it is
+ * neither. Shared so a handler in hle_callback.c can print one too. */
+const char *es3_arg_string(uint32_t va);
 
 /* Called by dispatch() on every guest call, to keep the trail. */
 void es3_note_dispatch(uint32_t va);

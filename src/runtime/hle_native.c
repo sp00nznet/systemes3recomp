@@ -243,6 +243,94 @@ static void force_windowed(CPU *c, uint32_t target)
 }
 
 /*
+ * The same thing for DXGI, which is the one that actually decides here.
+ *
+ * force_windowed() above only knows Direct3D 9, and this game renders with
+ * Direct3D 10: it loads d3d10.dll and dxgi.dll by name, resolves
+ * D3D10CreateDevice and CreateDXGIFactory with GetProcAddress, and asks the
+ * factory for a swap chain. Nothing in that chain is an import, and the
+ * factory never passes through a call this runtime can match by name - so
+ * there is no vtable slot to record the way Direct3DCreate9Ex let us record
+ * CreateDevice.
+ *
+ * Match the argument instead. IDXGIFactory::CreateSwapChain(this, pDevice,
+ * pDesc, ppSwapChain) is the only call into dxgi.dll whose third argument is a
+ * DXGI_SWAP_CHAIN_DESC, and that structure identifies itself: a real window
+ * handle at +44 and a BOOL at +48. Both have to check out before anything is
+ * written.
+ *
+ *   DXGI_SWAP_CHAIN_DESC
+ *     +0  BufferDesc   (DXGI_MODE_DESC, 28 bytes)
+ *     +28 SampleDesc   (8)
+ *     +36 BufferUsage
+ *     +40 BufferCount
+ *     +44 OutputWindow
+ *     +48 Windowed          <- this
+ *     +52 SwapEffect
+ *     +56 Flags
+ *
+ * Windowed = FALSE is a full-screen mode change on the display the window is
+ * on, which is the whole thing the screen watchdog exists to prevent and the
+ * one route it cannot undo by resizing a window.
+ */
+static uint32_t g_dxgi_lo, g_dxgi_hi;
+
+static int in_dxgi(uint32_t target)
+{
+    MEMORY_BASIC_INFORMATION mi;
+    wchar_t w[MAX_PATH];
+    const wchar_t *leaf;
+
+    if (target >= g_dxgi_lo && target < g_dxgi_hi) return 1;
+    if (g_dxgi_lo) return 0;                 /* known, and this is not it */
+    if (!VirtualQuery((LPCVOID)(uintptr_t)target, &mi, sizeof mi) ||
+        mi.Type != MEM_IMAGE) return 0;
+    if (!GetModuleFileNameW((HMODULE)mi.AllocationBase, w, MAX_PATH)) return 0;
+    leaf = wcsrchr(w, L'\\');
+    if (_wcsicmp(leaf ? leaf + 1 : w, L"dxgi.dll") != 0) return 0;
+    g_dxgi_lo = (uint32_t)(uintptr_t)mi.AllocationBase;
+    g_dxgi_hi = g_dxgi_lo + 0x00200000u;     /* generous; only used as a filter */
+    return 1;
+}
+
+static void force_windowed_dxgi(CPU *c, uint32_t target)
+{
+    static int off = -1;
+    uint32_t desc;
+
+    if (off < 0) off = getenv("ES3_FULLSCREEN") != NULL;
+    if (off || !in_dxgi(target)) return;
+
+    desc = A32(2);                            /* pDesc, past `this` */
+    if (!desc || desc < 0x10000u) return;
+    {
+        /* VirtualQuery rather than IsBadReadPtr, which probes by faulting:
+         * every call raises a first-chance access violation that the vectored
+         * handler then reports, and this one would run on every DXGI call. */
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((LPCVOID)(uintptr_t)desc, &mi, sizeof mi) ||
+            mi.State != MEM_COMMIT ||
+            (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) ||
+            desc + 60 > (uint32_t)(uintptr_t)mi.BaseAddress +
+                        (uint32_t)mi.RegionSize) return;
+    }
+    if (!IsWindow((HWND)(uintptr_t)rd32(desc + 44))) return;
+    if (rd32(desc + 48) > 1) return;          /* not a BOOL: not this call */
+
+    if (rd32(desc + 48) == 0) {
+        static unsigned char said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[dxgi] the game asked for an exclusive fullscreen "
+                            "swap chain at %ux%u; making it windowed instead "
+                            "(ES3_FULLSCREEN=1 to allow it)\n",
+                    rd32(desc), rd32(desc + 4));
+        }
+        wr32(desc + 48, 1);                   /* Windowed = TRUE */
+    }
+}
+
+/*
  * ES3_TRACE_HOSTCALLS: every real function the guest calls that is not an
  * import, once each.
  *
@@ -287,8 +375,12 @@ static void note_host_call(uint32_t target)
     leaf = wcsrchr(w, L'\\');
     WideCharToMultiByte(CP_ACP, 0, leaf ? leaf + 1 : w, -1,
                         name, sizeof name, NULL, NULL);
-    fprintf(stderr, "[hostcall] %s+0x%X\n", name,
-            target - (uint32_t)(uintptr_t)mi.AllocationBase);
+    /* With the base, because the trail records these as bare addresses and the
+     * only way to turn a trail full of them back into module+offset afterwards
+     * is to have been told where each module sits. */
+    fprintf(stderr, "[hostcall] %s+0x%X  (base %08X)\n", name,
+            target - (uint32_t)(uintptr_t)mi.AllocationBase,
+            (uint32_t)(uintptr_t)mi.AllocationBase);
 }
 
 void hle_call_address(CPU *c, uint32_t target)
@@ -299,6 +391,7 @@ void hle_call_address(CPU *c, uint32_t target)
     r.esp = c->esp; r.ebp = c->ebp; r.esi = c->esi; r.edi = c->edi;
 
     force_windowed(c, target);
+    force_windowed_dxgi(c, target);
     note_device_call(target);
     note_host_call(target);
 
@@ -399,7 +492,7 @@ static int takes_hinstance(const char *dll)
  * inside 120 bytes, and at least four characters - so an integer that happens
  * to be a valid pointer does not come back as a two-letter word. Anything it
  * declines still prints as hex. */
-static const char *as_string(uint32_t va)
+const char *es3_arg_string(uint32_t va)
 {
     static char buf[128];
     const char *p = (const char *)(uintptr_t)va;
@@ -415,9 +508,37 @@ static const char *as_string(uint32_t va)
         if ((unsigned char)ch < 0x20 || (unsigned char)ch > 0x7E) return NULL;
         buf[i] = ch;
     }
-    if (i < 4 || i == sizeof buf - 1) return NULL;
-    buf[i] = 0;
-    return buf;
+    if (i >= 4 && i < sizeof buf - 1) { buf[i] = 0; return buf; }
+
+    /*
+     * Then UTF-16, because this game is a W-API program and almost every
+     * string it passes is wide. Read as bytes it is one character and a null,
+     * so the loop above stops at i == 1 and declines - and the argument that
+     * mattered most, the text of the MessageBoxW the game puts up when it will
+     * not start, printed as a bare pointer.
+     *
+     * Converted with the ANSI code page rather than copied: this title is
+     * Japanese and its messages are too, so the useful thing to put in the log
+     * is whatever the console can render of them.
+     */
+    {
+        const wchar_t *w = (const wchar_t *)(uintptr_t)va;
+        unsigned n;
+        int k;
+        for (n = 0; n < 200; n++) {
+            if ((const char *)(w + n + 1) >
+                (const char *)mi.BaseAddress + mi.RegionSize) return NULL;
+            if (w[n] == 0) break;
+            if (w[n] < 0x20 && w[n] != '\n' && w[n] != '\r' && w[n] != '\t')
+                return NULL;
+        }
+        if (n < 2 || n >= 200) return NULL;
+        k = WideCharToMultiByte(CP_ACP, 0, w, (int)n, buf,
+                                (int)sizeof buf - 1, NULL, NULL);
+        if (k <= 0) return NULL;
+        buf[k] = 0;                  /* it converts a length, not a terminator */
+        return buf;
+    }
 }
 
 /* Said once per import, not once per call. */
@@ -551,7 +672,7 @@ void hle_call_native(CPU *c, HleId id)
         fprintf(stderr, "[call] %s(", hle_name(id));
         for (k = 0; k < na && k < 12; k++) {
             uint32_t v = A32(k);
-            const char *s = as_string(v);
+            const char *s = es3_arg_string(v);
             if (s) fprintf(stderr, "%s\"%s\"", k ? ", " : "", s);
             else   fprintf(stderr, "%s%08X", k ? ", " : "", v);
         }

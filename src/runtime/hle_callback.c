@@ -417,6 +417,81 @@ static void hle_create_thread(CPU *c, HleId id)
 
 /* SetWindowsHookEx(idHook, lpfn, hmod, threadId) - the callback is argument 1.
  * EnumWindows(lpEnumFunc, lParam) - argument 0. */
+/*
+ * The cabinet was never at the other end of a Remote Desktop session.
+ *
+ * This title is built on DXUT, Microsoft's sample framework, and DXUT opens
+ * with GetSystemMetrics(SM_REMOTESESSION) and refuses if it is non-zero:
+ *
+ *   MessageBoxW(hwnd, "Direct3D does not work over a remote session.",
+ *               "mkart3", MB_ICONERROR)
+ *
+ * That box is modal, the thread carrying the game sits in NtUserWaitMessage
+ * inside it for ever, and from outside the run looks like a hang with a black
+ * window - which is exactly what it looked like.
+ *
+ * The check is the framework's and it is about 2006 hardware. Direct3D 10 and
+ * 11 do work over a modern RDP session; the cabinet had a monitor bolted to it
+ * and could never have been remote either way. So answer 0 and let the game
+ * get on with it, the same way this runtime already answers HINSTANCE with a
+ * module handle the loader has heard of.
+ *
+ * Only SM_REMOTESESSION. Every other metric is the host's to answer.
+ */
+#define SM_REMOTESESSION_ 0x1000
+
+static void hle_get_system_metrics(CPU *c, HleId id)
+{
+    if (A32(0) == SM_REMOTESESSION_) {
+        static unsigned char said;
+        hle_call_native(c, id);
+        if (c->eax) {
+            if (!said) {
+                said = 1;
+                fprintf(stderr, "[hle] this is a remote session, and the game "
+                                "refuses Direct3D on one; saying it is not.\n");
+            }
+            c->eax = 0;
+        }
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/*
+ * A modal dialog is a hang with a picture on it.
+ *
+ * Nothing is watching a cabinet, so a game that puts up a MessageBox and waits
+ * for OK has stopped, and the run says nothing except that one thread is in
+ * NtUserWaitMessage. Print what it says - which is the most informative line
+ * the game will ever produce - and answer IDOK without showing it.
+ *
+ * That is a behaviour change and it is the right one: the alternative is a
+ * silent stall. ES3_MODAL=1 shows the box for anyone who wants to click it.
+ */
+static void hle_message_box(CPU *c, HleId id)
+{
+    static int show = -1;
+    /* A copy, because es3_arg_string() answers out of one static buffer and
+     * the second call overwrites the first - which printed the caption twice
+     * and lost the only sentence the game had to say. */
+    char cap[128];
+    const char *s = es3_arg_string(A32(2));
+    if (show < 0) show = getenv("ES3_MODAL") != NULL;
+    strncpy(cap, s ? s : "", sizeof cap - 1);
+    cap[sizeof cap - 1] = 0;
+    s = es3_arg_string(A32(1));
+
+    fprintf(stderr, "\n[game] MessageBox: %s%s%s\n",
+            cap, cap[0] ? " - " : "", s ? s : "(unreadable)");
+    if (show) { hle_call_native(c, id); return; }
+    fprintf(stderr, "       answering OK without showing it - a modal box on a "
+                    "cabinet is a stall (ES3_MODAL=1 to see it).\n");
+    fflush(stderr);
+    c->eax = 1;                                  /* IDOK */
+    c->esp += 4 + 4 * 4;                         /* __stdcall, four arguments */
+}
+
 static void hle_hook_proc(CPU *c, HleId id) { wrap_callback_arg(c, id, 1); }
 static void hle_enum_windows(CPU *c, HleId id) { wrap_callback_arg(c, id, 0); }
 
@@ -555,6 +630,9 @@ void hle_register_callbacks(void)
     ptrs += (unsigned)hle_bind("SetWindowsHookExW", hle_hook_proc);
     ptrs += (unsigned)hle_bind("SetWindowsHookExA", hle_hook_proc);
     ptrs += (unsigned)hle_bind("EnumWindows", hle_enum_windows);
+    hle_bind("GetSystemMetrics", hle_get_system_metrics);
+    hle_bind("MessageBoxW", hle_message_box);
+    hle_bind("MessageBoxA", hle_message_box);
     ptrs += (unsigned)hle_bind("CreateThread", hle_create_thread);
     ptrs += (unsigned)hle_bind("_beginthreadex", hle_create_thread);
 
