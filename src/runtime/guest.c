@@ -474,6 +474,14 @@ void es3_window_selftest(void)
 
 #endif
 
+/* A size in megabytes from the environment, or the built-in default. */
+static uint32_t mb_env(const char *name, uint32_t dflt_mb)
+{
+    const char *e = getenv(name);
+    int v = e ? atoi(e) : 0;
+    return (v > 0 ? (uint32_t)v : dflt_mb) << 20;
+}
+
 static void *reserve(uint32_t addr, uint32_t size)
 {
 #ifdef _WIN32
@@ -844,7 +852,13 @@ int guest_load(const char *exe_path)
      * Both numbers are reservations, committed a frame at a time, and hybrid
      * hands an arena back when its thread exits - so the cost is address
      * space, which /LARGEADDRESSAWARE made affordable. */
-    if (!hybrid_init(es3_hybrid_invoke, 2u << 20, 32u << 20)) {
+    /* ES3_HYBRID_FRAME_MB and ES3_HYBRID_ARENA_MB, because these two and
+     * ES3_THREAD_STACK_MB spend the same address space and the right split is
+     * a property of the game, not of the runtime. Thirty worker threads at 32
+     * MB of arena is a gigabyte that a thread stack cannot then have, and this
+     * game wants both. */
+    if (!hybrid_init(es3_hybrid_invoke, mb_env("ES3_HYBRID_FRAME_MB", 2u),
+                     mb_env("ES3_HYBRID_ARENA_MB", 32u))) {
         fprintf(stderr, "cannot set up the real -> lifted boundary\n");
         return -1;
     }
