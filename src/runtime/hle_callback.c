@@ -461,10 +461,19 @@ static void hle_create_window(CPU *c, HleId id)
          */
         {
             RECT r; r.left = 0; r.top = 0; r.right = w; r.bottom = h;
+            int cw = w, ch = h;
+            static unsigned char told;
             if (AdjustWindowRectEx(&r, (DWORD)style, A32(9) != 0,
                                    (DWORD)A32(0))) {
                 w = r.right - r.left;
                 h = r.bottom - r.top;
+            }
+            if (!told) {
+                told = 1;
+                fprintf(stderr, "[hle] its picture is %dx%d, so the window is "
+                                "%dx%d and the client area is the whole "
+                                "picture (cap %dx%d)\n",
+                        cw, ch, w, h, maxw, maxh);
             }
         }
         wr32(c->esp + 4 + 4 * 6, (uint32_t)w);
@@ -745,12 +754,32 @@ static void hle_get_comm_modem_status(CPU *c, HleId id)
     hle_call_native(c, id);
 }
 
+/* Who in the game is talking to the port.
+ *
+ * Which guest function owns a serial conversation is most of the question
+ * when the bytes on it are not the protocol the runtime is answering, and it
+ * is one read: the return address the caller pushed is on top of the guest
+ * stack. Printed once per distinct caller, under ES3_TRACE_JVS. */
+static void jvs_note_caller(CPU *c)
+{
+    static uint32_t seen[8];
+    static int n;
+    uint32_t from;
+    int i;
+    if (!getenv("ES3_TRACE_JVS")) return;
+    from = rd32(c->esp);
+    for (i = 0; i < n; i++) if (seen[i] == from) return;
+    if (n < 8) seen[n++] = from;
+    fprintf(stderr, "[jvs] the port is being driven from %08X\n", from);
+}
+
 /* WriteFile(h, buf, n, written, ovl) - the request goes straight into the
  * board, which answers into the pipe the reads come out of. */
 static void hle_write_file(CPU *c, HleId id)
 {
     if (es3_jvs_is_port(A32(0))) {
         uint32_t n = A32(2), written = A32(3);
+        jvs_note_caller(c);
         es3_jvs_write(A32(1), n);
         if (written) wr32(written, n);
         SetLastError(0);
@@ -767,6 +796,7 @@ static void hle_write_file_ex(CPU *c, HleId id)
 {
     if (es3_jvs_is_port(A32(0))) {
         uint32_t n = A32(2), ovl = A32(3);
+        jvs_note_caller(c);
         es3_jvs_write(A32(1), n);
         if (ovl) { wr32(ovl, 0); wr32(ovl + 4, n); }
         es3_jvs_complete_write(ovl, n, A32(4));
