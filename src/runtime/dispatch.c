@@ -137,7 +137,7 @@ static void dispatch_inner(CPU *c, uint32_t va);
  * about one title, and this runtime serves a platform. The game project binds
  * them in its own host.c, next to a comment explaining what the function is.
  */
-#define GUEST_HLE_MAX 16
+#define GUEST_HLE_MAX 64
 static struct { uint32_t va; int (*fn)(CPU *); } g_guest_hle[GUEST_HLE_MAX];
 static unsigned g_guest_hle_n;
 

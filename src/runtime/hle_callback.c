@@ -389,14 +389,50 @@ static int windowed(void)
     return on;
 }
 
-#define ES3_MAX_W 1280
-#define ES3_MAX_H 720
+/*
+ * How big the window is allowed to be: the desktop's work area, less the
+ * frame, and not a fixed 1280x720.
+ *
+ * A fixed cap looks harmless and crops the picture. The swap chain is made at
+ * the size the GAME asked for - 1360x768 for this cabinet - and DXGI's flip
+ * models blit that back buffer into the client area one pixel to one pixel,
+ * with no scaling. A client area smaller than the back buffer therefore does
+ * not shrink the picture, it shows the top-left corner of it: the right-hand
+ * side and the bottom of a cabinet screen are simply missing.
+ *
+ * So shrink only when the window genuinely will not fit next to the taskbar,
+ * which for a 768-line cabinet on any ordinary desktop it does.
+ *
+ * ES3_MAX_W / ES3_MAX_H override, for a small screen or a deliberate crop.
+ */
+static void window_cap(int *maxw, int *maxh)
+{
+    RECT wa;
+    const char *ew = getenv("ES3_MAX_W"), *eh = getenv("ES3_MAX_H");
+
+    if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &wa, 0)) {
+        *maxw = wa.right - wa.left;
+        *maxh = wa.bottom - wa.top;
+    } else {
+        *maxw = GetSystemMetrics(SM_CXSCREEN);
+        *maxh = GetSystemMetrics(SM_CYSCREEN);
+    }
+    /* Room for the frame, so the outer window still fits after it is grown. */
+    *maxw -= GetSystemMetrics(SM_CXSIZEFRAME) * 2;
+    *maxh -= GetSystemMetrics(SM_CYSIZEFRAME) * 2 +
+             GetSystemMetrics(SM_CYCAPTION);
+    if (ew) *maxw = atoi(ew);
+    if (eh) *maxh = atoi(eh);
+    if (*maxw < 320) *maxw = 320;
+    if (*maxh < 240) *maxh = 240;
+}
 
 static void hle_create_window(CPU *c, HleId id)
 {
     if (windowed()) {
         uint32_t style = A32(3);
-        int w = (int)A32(6), h = (int)A32(7);
+        int w = (int)A32(6), h = (int)A32(7), maxw, maxh;
+        window_cap(&maxw, &maxh);
         if (style & 0x80000000u) {                    /* WS_POPUP */
             static unsigned char said;
             if (!said) {
@@ -408,8 +444,31 @@ static void hle_create_window(CPU *c, HleId id)
             style = (style & ~0x80000000u) | 0x00CF0000u;   /* WS_OVERLAPPEDWINDOW */
             wr32(c->esp + 4 + 4 * 3, style);
         }
-        if (w > ES3_MAX_W) wr32(c->esp + 4 + 4 * 6, (uint32_t)ES3_MAX_W);
-        if (h > ES3_MAX_H) wr32(c->esp + 4 + 4 * 7, (uint32_t)ES3_MAX_H);
+        if (w > maxw) w = maxw;
+        if (h > maxh) h = maxh;
+
+        /*
+         * And grow it by the frame, because CreateWindowEx is given the
+         * OUTER size and the swap chain is made at the client size.
+         *
+         * Without this the game presents a 1280x720 back buffer into a
+         * client area that is the frame narrower and the title bar shorter,
+         * and a desktop-sized slice of the right edge and the bottom of the
+         * picture is simply not on screen - which is exactly what it looks
+         * like: a cabinet screen with its right side and bottom cut off.
+         * WS_POPUP had no frame, so the game was right and this clamp was
+         * wrong the moment it traded the style.
+         */
+        {
+            RECT r; r.left = 0; r.top = 0; r.right = w; r.bottom = h;
+            if (AdjustWindowRectEx(&r, (DWORD)style, A32(9) != 0,
+                                   (DWORD)A32(0))) {
+                w = r.right - r.left;
+                h = r.bottom - r.top;
+            }
+        }
+        wr32(c->esp + 4 + 4 * 6, (uint32_t)w);
+        wr32(c->esp + 4 + 4 * 7, (uint32_t)h);
         wr32(c->esp + 4 + 4 * 4, 64);                 /* x */
         wr32(c->esp + 4 + 4 * 5, 64);                 /* y */
     }
@@ -420,8 +479,27 @@ static void hle_create_window(CPU *c, HleId id)
 static void hle_set_window_pos(CPU *c, HleId id)
 {
     if (windowed()) {
-        if ((int)A32(4) > ES3_MAX_W) wr32(c->esp + 4 + 4 * 4, (uint32_t)ES3_MAX_W);
-        if ((int)A32(5) > ES3_MAX_H) wr32(c->esp + 4 + 4 * 5, (uint32_t)ES3_MAX_H);
+        int w = (int)A32(4), h = (int)A32(5), maxw, maxh;
+        window_cap(&maxw, &maxh);
+        if (w > maxw || h > maxh) {
+            HWND hw = (HWND)(uintptr_t)A32(0);
+            RECT r;
+            if (w > maxw) w = maxw;
+            if (h > maxh) h = maxh;
+            /* Outer size again, and the same crop if it is not grown by the
+             * frame - see hle_create_window. The style has to be read off the
+             * window because this call does not carry one. */
+            r.left = 0; r.top = 0; r.right = w; r.bottom = h;
+            if (hw && AdjustWindowRectEx(&r,
+                    (DWORD)GetWindowLongPtrA(hw, GWL_STYLE),
+                    GetMenu(hw) != NULL,
+                    (DWORD)GetWindowLongPtrA(hw, GWL_EXSTYLE))) {
+                w = r.right - r.left;
+                h = r.bottom - r.top;
+            }
+            wr32(c->esp + 4 + 4 * 4, (uint32_t)w);
+            wr32(c->esp + 4 + 4 * 5, (uint32_t)h);
+        }
     }
     hle_call_native(c, id);
 }
