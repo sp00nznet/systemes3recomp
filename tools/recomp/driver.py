@@ -32,6 +32,7 @@ Usage:
   py -3.11 -m tools recomp <game.exe> <catalog.json> <outdir>
 """
 
+import glob
 import json
 import os
 import re

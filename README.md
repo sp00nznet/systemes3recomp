@@ -18,13 +18,17 @@
 community hub for sp00nznet's recomp projects.
 
 **Current version: v0.1.0.** The pipeline runs end to end against *Mario Kart
-Arcade GP DX* at **99.99% instruction coverage**. The whole game builds to a
-32.8 MB native executable and **boots and stays up** — 47 million guest calls,
-27 threads, its config read, D3DX10's thread pump started, its window class
-registered — with **all 495 imports** answered by real DLLs, the cabinet's own
-camera and JVS libraries included. One Win32 call stands between that and a
-picture. See [Status](#status) and
-[Where it stops](#where-it-stops-exactly).
+Arcade GP DX*. The whole game builds to a native executable, **boots through
+the cabinet's entire startup sequence with no error filed**, and **renders its
+attract mode in full 3D** — the course, the karts, the characters, animating,
+at 1360x768 — with **all 495 imports** answered by real DLLs, the cabinet's own
+camera and JVS libraries included.
+
+![Mario Kart Arcade GP DX attract mode, recompiled](https://raw.githubusercontent.com/sp00nznet/mariokartdx-systemes3-recomp/main/docs/attract-mode.png)
+
+Getting the last of the way there was three missing instructions hiding behind
+one misread number — see [Where it stops](#where-it-stops-now) and
+[Status](#status).
 
 ---
 
@@ -180,12 +184,12 @@ Arcade GP DX* v1.00.32 — 5.8 MB, PE32, `i386`, image base `0x00400000`, entry
 | | |
 |---|---|
 | PE parsing | **Works.** Verified against four *Mario Kart Arcade GP DX* builds spanning 2013–2022. Sections, entry, 495 imports across 27 DLLs, 108,414 relocations. |
-| Function recovery | **26,075 real ones.** A first pass found 28,597; 2,526 of those were addresses inside instructions and 237 more only showed up once the catalog was complete. 2,586 branch targets then had to be *added*, because clamping a function at a shared epilogue leaves its second half unreachable. |
-| Lifting | **Works.** 31,096 functions lift to **2,633,954 lines of C** in 78 translation units. Not one fails outright. The count grew past the catalog's own because the driver now closes what the *generated text* dispatches to, round after round, until nothing is left open - which is a thing the catalog cannot know, because some of those addresses are the lifter's own arithmetic. |
-| Instruction coverage | **99.966%.** 886 emitted lines out of 2.6 million are unlifted, and the game has now executed none of them: the ones it used to reach - `lock xadd`, `lock cmpxchg`, `cvtdq2ps` - went upstream this round. What is left is overwhelmingly data the recovery pass mistook for code. |
+| Function recovery | **25,757 real ones.** A first pass found 28,597; 2,526 of those were addresses inside instructions and 237 more only showed up once the catalog was complete. 2,586 branch targets then had to be *added*, because clamping a function at a shared epilogue leaves its second half unreachable. |
+| Lifting | **Works.** 29,645 functions lift into 75 translation units. Not one fails outright. The count grew past the catalog's own because the driver now closes what the *generated text* dispatches to, round after round, until nothing is left open - which is a thing the catalog cannot know, because some of those addresses are the lifter's own arithmetic. |
+| Instruction coverage | **Complete for every path this game takes.** The ones it reached and stopped on - `lock xadd`, `lock cmpxchg`, `cvtdq2ps`, and then `cvtps2pd`, `fldln2` and `fyl2x` - all went upstream into pcrecomp, the last three with the rest of the x87 transcendental set. What is left unlifted is overwhelmingly data the recovery pass mistook for code. |
 | Compiles | **Yes.** The largest translation unit — 108 MB of C, before the split was made size-aware — builds to a clean 70 MB object with MSVC, no warnings. |
 | Import resolution | **489 of 495** stack purges derived. The six left are `d3dx9_43` CPU-dispatch thunks, which need no purge — they are forwarded, and the real callee unwinds. |
-| Runtime | **Boots, opens a window, brings up both renderers, loads its data.** The full lifted image creates its `mkart3` window, gets a working window procedure through it, brings up Direct3D 9Ex and Direct3D 10, loads its shader effects with D3DX10, opens DirectInput 8, and runs a real frame loop - five million guest calls, twenty-nine threads, the game's own `*INF*` and `*ERR*` lines in the log, and D3DX10's thread pump calling the game's own `ID3DX10DataLoader` methods as lifted code. The window is still black, and a thread D3DX10 created runs out of real stack - see below. |
+| Runtime | **Boots, renders, and stays up.** The full lifted image creates its `mkart3` window, brings up Direct3D 10 and a DXGI swap chain, loads its shader effects through D3DX10, opens DirectInput 8 — and then runs the cabinet's whole startup sequence: drive unit, I/O board, NAMCAM, steering, IC card reader, local network, ALL.Net authentication, with **no error filed in any of the five slots**. Then it draws attract mode: 1,015,463 of 1,044,480 pixels lit. |
 | Imports, from the game tree | **495 of 495.** Run from a real tree and every import resolves against a real DLL, the cabinet ones included: the OKAO Vision camera and `JVSEmuMK.dll` ship with the game, so `hle_native.c` forwards to the actual board libraries. |
 | The board | **Not started, on purpose.** The 40 remaining imports: JVS, the card reader, the camera, authentication. See [docs/board-io.md](docs/board-io.md). |
 
@@ -239,68 +243,55 @@ nobody has found yet.
 
 ### Where it stops now
 
-The window is real, framed, 1280x720, and black. Everything up to drawing works:
+It does not stop. *Mario Kart Arcade GP DX* boots through the cabinet's whole
+startup sequence and draws its attract mode, and the run ends when you end it.
 
-* `006AB300`, the function that brings the game up, **returns 1**. It returned
-  0 all through the previous round, and everything after it was skipped.
-* `004042C0` opens every subsystem, including the input one whose singleton a
-  task used to read while it was still null.
-* **Direct3D 9Ex creates its device and returns S_OK**, windowed.
-* The game loads its data, prints its own `*INF*` and `*ERR*` lines, and runs
-  its frame loop.
+What the toolkit learned getting there is worth more than the milestone, and
+almost none of it was about the CPU.
 
-It then asks DXUT for a Direct3D device and is told there is none, which on
-this machine is correct: measured in-process, `Direct3DCreate9` reports **0
-adapters**, `Direct3DCreate9Ex` returns **`D3DERR_NOTAVAILABLE`**, and DXGI
-enumerates **6 adapters with 0 outputs** between them. That is a remote
-session, not a port that does not work, and `es3_report_display()` now says so
-in one line before the guest starts rather than letting the game hang in a
-modal box nobody is going to click.
+**A cabinet check that fails is a black screen, not a warning.** Six different
+errors — no I/O board, no dongle, no camera, no steering, no drive board, a
+card reader answered in the wrong protocol — each set a mode whose entry in the
+game's own table makes the frame loop skip the **entire task tick**. Any one of
+them, alone, means no scene is ever built. A recompiled arcade title will not
+say "the camera is missing"; it will draw nothing, and the reason will be five
+levels down.
 
-Getting that far took two x87 fixes in the lifter, both upstream in pcrecomp.
-`fxch` was lifted as a swap of `st(0)` with itself - capstone reports
-`fxch st(1)` with *both* registers, `st(0)` first - and the popping arithmetic
-(`faddp st(1)` is `st(1) += st(0)`) wrote its result into the slot the next
-`fpop` discards. The first one turned the game's fixed-timestep accumulator
-into an infinite loop: it subtracted the step from the wrong register, the step
-came out negative, and the thread carrying the whole call graph never finished
-a frame. 24,268 `fxch` and ~80,000 popping sites in one image.
+**Answer the question the hardware would answer, at the place it is asked.**
+Every fix here is a pre-hook on the guest function that asks — is a board on the
+bus, is the dongle readable, is the camera fitted — returning what a cabinet
+would say. Not a poke held down from a watchdog: the boot evaluates each of
+these *once*, a few seconds in, and a poke that resolves a heap chain at ten
+hertz loses that race every time. `es3_bind_guest()` is the whole mechanism and
+a handler that returns 0 lets the original run afterwards.
 
-What is left is speed, and it is not a detail.
+**Read the whole exit code.** A death that reached no vectored handler, no
+unhandled-exception filter, no `ExitProcess`, no `TerminateProcess`, no
+`NtTerminateProcess` and left no Windows Error Reporting record was chased for
+days as "exit code 6". Through `cmd.exe` the code is `0x40010006` —
+`DBG_PRINTEXCEPTION_C`, the exception `OutputDebugString` raises. MSYS was
+printing the low byte. A process whose exit code *is* an exception code died of
+that exception, and the vectored handler had been declining it every time. It
+is informational and continuable; `es3_veh` now continues it, which is exactly
+what `OutputDebugString`'s own `__try` does.
+
+**And it was hiding three instructions.** `cvtps2pd`, then `fldln2`, then
+`fyl2x` — each only visible once the one before it was fixed. `fldln2; fxch;
+fyl2x` is how a compiler builds `log()`. They went upstream into pcrecomp with
+the rest of the x87 transcendental set.
+
+**Count your runs.** A failure that happens about half the time reads as a coin
+flip, and three- and four-run streaks were repeatedly mistaken for signal in
+this round — a JSON bisect, a screenshot flag, a hook — each of them noise.
+
+#### Still open
 
 | | |
 |---|---|
-| dispatches per second | **2.4 million** |
-| per dispatch | about **400 ns** |
-| frame steps in 30 seconds | **2 to 14**, depending on the run |
-| guest calls per frame | about **35 million** - it is still loading |
-
-Four hundred nanoseconds per guest call is the whole problem. The hottest
-function in a sampled window was `0041EAA0`, called ninety-seven thousand
-times: it is `fabsf`, two instructions, and every one of those calls went
-through `es3_note_dispatch`, a watch check, an import-range check, a thunk
-check, a table lookup and an indirect call into a C function that sets up a CPU
-frame.
-
-**The fix is that a direct call should be a direct call.** The lifter emits
-`push32(c, ret); dispatch(c, 0x0041EAA0u);` for `call 0x41eaa0`, and the driver
-knows - after the fact, from its own output - that `0041EAA0` is one of the
-functions it lifted. Emitting `push32(c, ret); L_0041EAA0(c);` instead removes
-the lookup entirely for the overwhelming majority of calls. That needs a
-generated header of declarations and one pass over the emitted text.
-
-Two things that were tried and measured and did **not** help, recorded so they
-are not tried again:
-
-* **An address-indexed dispatch table** in place of the binary search. Seventeen
-  megabytes of pointers, one load instead of fifteen probes: 2.38 million
-  dispatches a second, against 2.7 before. The search was not the cost.
-* **Bigger thread stacks.** Lifted code really does overflow 16 MB after about
-  four minutes of loading (C00000FD, on a thread that then cannot handle its
-  own overflow) - but a stack is a *reservation* and this game has twenty-nine
-  threads. 64 MB each ran the address space out in fifteen seconds; 32 MB moved
-  the failure somewhere else again. The answer is for lifted code to use less
-  real stack per guest frame, not for every thread to reserve more.
+| The serial boards | The game posts three-byte overlapped reads on COM1 for ever and never writes one: the board is expected to speak first, so `jvs.c`, which answers requests, has nothing to answer. The drive board and steering are stood in for with a flag each, not a protocol |
+| Input | `ES3_JVS_SEQ` presses switches on a timetable and the operator menu never answered them — the switches it reads come from the USB I/O board, which is answered for existence and not for data |
+| `ES3_TRACE_NET` | Binds four more imports, and the boot then stalls early and reproducibly. The ALL.Net listener prints the paths it is asked for instead |
+| `tools watch` | Runs the game as a debuggee and reads the kernel's account of how it died. It found the stack overflow; it could never reach the later failure, because under a debugger the run does not get that far |
 
 ### Seeing a death that has no handler
 
