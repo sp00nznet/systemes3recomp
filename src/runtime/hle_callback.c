@@ -200,6 +200,64 @@ uint32_t es3_callback(uint32_t guest_va)
     return 0;
 }
 
+/*
+ * A guest function pointer that real code will call, planted where it lives.
+ *
+ * es3_callback() covers the pointers this runtime can see go past: an import
+ * handler knows which argument is a function and swaps a thunk in. It cannot
+ * cover a pointer that lifted code pushes itself - and the interesting ones
+ * are exactly those, because they are arguments to COM methods rather than to
+ * imports. Mario Kart's input is one:
+ *
+ *     007400DC  push 0x73ff60             ; the DIEnumDevicesCallback
+ *     007400E6  mov  edx, [ecx + 0x10]    ; IDirectInput8::EnumDevices
+ *     007400EC  call edx
+ *
+ * 0x0073FF60 is a guest address handed straight to the real DINPUT8.dll,
+ * which calls it as machine code. The original bytes are still mapped there,
+ * so the callback "runs" - as unlifted code, off an import table full of
+ * runtime sentinels. The enumeration finds a controller, calls the callback,
+ * and the game learns nothing: no device, no GetDeviceState, no input, and
+ * not one error anywhere.
+ *
+ * Nothing in a static recompilation ever executes the guest image, though.
+ * The lifted C is the program and the image is data - so the address is free
+ * to become a real jump to a thunk, which is what this does. After it, that
+ * address means the same thing to real code as it does to lifted code.
+ *
+ * rel32 always reaches: both ends are in this process's 32-bit address space.
+ */
+int es3_plant_callback(uint32_t guest_va)
+{
+#ifdef _WIN32
+    unsigned char *at = (unsigned char *)(uintptr_t)guest_va;
+    uint32_t t = es3_callback(guest_va);
+    DWORD old;
+
+    if (!t) return 0;
+    if (!VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        fprintf(stderr, "[callback] cannot make %08X writable to plant a "
+                        "jump to its thunk\n", guest_va);
+        return 0;
+    }
+    at[0] = 0xE9;                                  /* jmp rel32 */
+    *(int32_t *)(at + 1) = (int32_t)(t - (guest_va + 5));
+    VirtualProtect(at, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), at, 5);
+
+    /* Keep es3_guest_diff() honest: this runtime just rewrote the game's
+     * code, and without this the next LoadLibrary would report it as the
+     * DLL's doing. */
+    es3_guest_resnapshot(guest_va, 5);
+    fprintf(stderr, "[callback] %08X now jumps to its own lifted code, so a "
+                    "real DLL handed that pointer reaches it\n", guest_va);
+    return 1;
+#else
+    (void)guest_va;
+    return 0;
+#endif
+}
+
 /* ---- the CRT initialiser tables ----
  *
  *   void _initterm (_PVFV *begin, _PVFV *end);
@@ -427,8 +485,52 @@ static void window_cap(int *maxw, int *maxh)
     if (*maxh < 240) *maxh = 240;
 }
 
+/*
+ * Alt must not stop the game.
+ *
+ * The window the game asked for was WS_POPUP: no caption, no system menu,
+ * and Alt meant nothing to it. windowed() trades that for
+ * WS_OVERLAPPEDWINDOW so the thing can be moved and closed on a desktop,
+ * and WS_SYSMENU comes with it - so now a tap on Alt is SC_KEYMENU,
+ * DefWindowProc opens the system menu, and the menu's modal loop owns the
+ * thread that pumps messages. The game does not crash and does not quit; it
+ * simply stops, until something dismisses the menu. From the outside that
+ * reads as "Alt pauses it and input does nothing", which is exactly what it
+ * is, and it is this runtime's doing rather than the game's.
+ *
+ * Subclassing is enough: swallow the two system commands that open a menu
+ * and hand everything else to the window procedure the game installed. Only
+ * the window whose style was actually changed, and only the first one -
+ * every other window keeps its own procedure, and one saved pointer cannot
+ * serve two.
+ */
+static WNDPROC g_game_wndproc;
+static int g_wndproc_unicode;
+
+static LRESULT CALLBACK es3_menu_eater(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_SYSCOMMAND && ((w & 0xFFF0) == SC_KEYMENU ||
+                               (w & 0xFFF0) == SC_MOUSEMENU))
+        return 0;
+    return g_wndproc_unicode ? CallWindowProcW(g_game_wndproc, h, m, w, l)
+                             : CallWindowProcA(g_game_wndproc, h, m, w, l);
+}
+
+static void es3_no_alt_menu(HWND h)
+{
+    if (g_game_wndproc || !h) return;
+    g_wndproc_unicode = IsWindowUnicode(h);
+    g_game_wndproc = (WNDPROC)(uintptr_t)(g_wndproc_unicode
+        ? SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)(uintptr_t)es3_menu_eater)
+        : SetWindowLongPtrA(h, GWLP_WNDPROC, (LONG_PTR)(uintptr_t)es3_menu_eater));
+    if (!g_game_wndproc) return;
+    fprintf(stderr, "[hle] and Alt will not open its system menu, which would "
+                    "stop the frame loop until the menu closed\n");
+}
+
 static void hle_create_window(CPU *c, HleId id)
 {
+    int want_menu_fix = 0;
     if (windowed()) {
         uint32_t style = A32(3);
         int w = (int)A32(6), h = (int)A32(7), maxw, maxh;
@@ -480,8 +582,10 @@ static void hle_create_window(CPU *c, HleId id)
         wr32(c->esp + 4 + 4 * 7, (uint32_t)h);
         wr32(c->esp + 4 + 4 * 4, 64);                 /* x */
         wr32(c->esp + 4 + 4 * 5, 64);                 /* y */
+        want_menu_fix = 1;
     }
     hle_call_native(c, id);
+    if (want_menu_fix && c->eax) es3_no_alt_menu((HWND)(uintptr_t)c->eax);
 }
 
 /* SetWindowPos(hwnd, after, x, y, cx, cy, flags) - arguments 4 and 5. */

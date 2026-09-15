@@ -917,6 +917,15 @@ void es3_guest_snapshot(uint32_t lo, uint32_t hi)
     memcpy(g_code_copy, (const void *)(uintptr_t)lo, hi - lo);
 }
 
+/* This runtime changed the game's code on purpose - see es3_plant_callback().
+ * Without telling the snapshot, the next LoadLibrary reports it as the DLL's
+ * doing, and that report is the only way a real patch is ever noticed. */
+void es3_guest_resnapshot(uint32_t lo, uint32_t n)
+{
+    if (!g_code_copy || lo < g_code_lo || lo + n > g_code_hi) return;
+    memcpy(g_code_copy + (lo - g_code_lo), (const void *)(uintptr_t)lo, n);
+}
+
 void es3_guest_diff(const char *when)
 {
     const unsigned char *now = (const unsigned char *)(uintptr_t)g_code_lo;

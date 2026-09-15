@@ -60,6 +60,7 @@ uint32_t guest_image_base(void);
 uint32_t guest_image_size(void);
 void     es3_guest_snapshot(uint32_t lo, uint32_t hi);
 void     es3_guest_diff(const char *when);
+void     es3_guest_resnapshot(uint32_t lo, uint32_t n);
 
 /* Widen THIS thread's TEB stack bounds to include [lo, hi). Windows validates
  * an exception handler against those bounds, and lifted code never runs on the
@@ -187,6 +188,7 @@ void hle_register_board(void);     /* JVS, card reader, camera, authentication *
  * dispatch() turns a thunk back into its guest VA, so lifted code reading the
  * same slot still lands in lifted code. See src/runtime/hle_callback.c. */
 uint32_t es3_callback(uint32_t guest_va);
+int      es3_plant_callback(uint32_t guest_va);
 
 /* Forward one import to the real function in the host's own copy of the DLL.
  * Returns 0 if the DLL or the export is not there - a cabinet-only DLL, or a
