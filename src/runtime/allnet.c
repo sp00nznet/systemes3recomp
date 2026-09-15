@@ -643,7 +643,7 @@ static uint32_t preferred_addr(void)
 void es3_hle_wsaioctl(CPU *c, HleId id)
 {
     uint32_t code = A32(1), out = A32(4), pret = A32(6);
-    uint32_t want, bytes, k, n;
+    uint32_t want, bytes, k, n, pick = (uint32_t)-1, a;
     unsigned char *p;
     static int said;
 
@@ -654,34 +654,55 @@ void es3_hle_wsaioctl(CPU *c, HleId id)
 
     bytes = rd32(pret);
     n = bytes / IFINFO;
-    if (n < 2) return;                    /* one interface is already the answer */
-
-    want = preferred_addr();
-    if (!want) return;
-
+    if (!n) return;
     p = (unsigned char *)(uintptr_t)out;
+
+    /*
+     * Exactly one entry, and always 24 bytes - never "leave it alone".
+     *
+     * The game's count is `bytes / 24` (a compiler reciprocal-multiply, plain
+     * as day at 0x0067839E) while it strides the array by
+     * sizeof(INTERFACE_INFO) = 76. So whatever it is told, it walks three
+     * times as many entries as the buffer holds, off the end of a 1520-byte
+     * stack array, and the address it decides is the cabinet's own is whatever
+     * garbage sorted last. That is true for ONE interface as much as for
+     * eight: 76 bytes makes its arithmetic say three.
+     *
+     * Getting this wrong is not a cosmetic wrong. [0x00952924] is where that
+     * address lands, 0x00678453 gives up if it is zero, and the give-up path
+     * skips 0x0067856E - the only call to the cabinet-link constructor. No
+     * link object means 0x00678D30 returns false, means the boot task never
+     * runs the All.Net step, means <OFFLINE OPERATION> for ever. The earlier
+     * version of this function returned without touching anything whenever
+     * there was a single interface or when the routed address was not among
+     * them, and those runs are exactly the ones that ended up offline.
+     */
+    want = preferred_addr();
     for (k = 0; k < n; k++) {
-        uint32_t a;
-        memcpy(&a, p + k * IFINFO + 8, 4);      /* iiAddress.sin_addr */
-        if (a != want) continue;
-        if (k) memcpy(p, p + k * IFINFO, IFINFO);
-        /* 24, not 76. The game's own count is `bytes / 24` (a compiler
-         * reciprocal-multiply, plain as day at 0x0067839E) while it strides
-         * the array by sizeof(INTERFACE_INFO) = 76 - so it always walks three
-         * times as many entries as the buffer holds, off the end of a 1520
-         * byte stack array, and the address it ends up calling the cabinet's
-         * own is whatever garbage sorted last. Reporting 76 here handed it
-         * three entries and it adopted two of stack. Report what makes its
-         * arithmetic say one. */
-        wr32(pret, 24u);
-        if (!said) {
-            const unsigned char *b = (const unsigned char *)&want;
-            said = 1;
-            fprintf(stderr, "[link] %u interfaces; giving the game only "
-                            "%u.%u.%u.%u, the one this machine routes through "
-                            "(ES3_NO_LINK_FIX to hand over all of them)\n",
-                    n, b[0], b[1], b[2], b[3]);
-        }
-        return;
+        uint32_t flags;
+        memcpy(&flags, p + k * IFINFO, 4);          /* iiFlags */
+        memcpy(&a, p + k * IFINFO + 8, 4);          /* iiAddress.sin_addr */
+        if (!(flags & 1u) || (flags & 4u)) continue;  /* down, or loopback */
+        if (want && a == want) { pick = k; break; }
+        if (pick == (uint32_t)-1) pick = k;         /* the first usable one */
+    }
+    if (pick == (uint32_t)-1) pick = 0;             /* nothing usable; say so
+                                                     * with one entry anyway,
+                                                     * which the game can read
+                                                     * without running off the
+                                                     * end of its buffer */
+    if (pick) memcpy(p, p + pick * IFINFO, IFINFO);
+    wr32(pret, 24u);
+
+    if (!said) {
+        const unsigned char *b;
+        memcpy(&a, p + 8, 4);
+        b = (const unsigned char *)&a;
+        said = 1;
+        fprintf(stderr, "[link] %u interfaces; giving the game one, "
+                        "%u.%u.%u.%u%s (ES3_NO_LINK_FIX to hand over all of "
+                        "them)\n", n, b[0], b[1], b[2], b[3],
+                (want && a == want) ? ", the one this machine routes through"
+                                    : ", the first that is up and not loopback");
     }
 }
