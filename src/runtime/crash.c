@@ -780,6 +780,28 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
             }
         }
 
+        /*
+         * And then swallow it, rather than hoping something else will.
+         *
+         * 0x40010006 and its wide twin 0x4001000A exist for one purpose: to
+         * hand a string to a debugger. There is no debugger here, the
+         * exception is informational and continuable, and the only thing
+         * OutputDebugString's own __try does with it is continue - so doing
+         * that here is not a workaround, it is the same answer one frame
+         * earlier. What it removes is the failure where nothing is eligible to
+         * catch it: no eligible handler on an informational exception is not a
+         * bug that reports itself, it is a process that exits with 0x40010006
+         * and a log that stops mid-sentence. Through MSYS that arrives as
+         * "exit 6" - a number belonging to nothing in the source, which was
+         * chased as one for most of a week before the exit code was read in
+         * full.
+         *
+         * The thread-name exception above is already treated exactly this way,
+         * for exactly this reason.
+         */
+        if (r->ExceptionCode == 0x40010006u || r->ExceptionCode == 0x4001000Au)
+            return EXCEPTION_CONTINUE_EXECUTION;
+
         static volatile LONG said[8];
         int i;
         for (i = 0; i < 8; i++) {
@@ -887,6 +909,37 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
     return EXCEPTION_CONTINUE_SEARCH;   /* still die; a debugger still gets it */
 }
 
+/*
+ * The last door, and the only one that was never watched.
+ *
+ * This file installs a vectored handler, which sees an exception first - and a
+ * vectored handler that declines passes the fault to the frame handlers and
+ * then to the unhandled-exception filter. That filter is where a program gets
+ * to end itself on its own terms, and this runtime forwards the guest's
+ * SetUnhandledExceptionFilter straight through to the real one (see
+ * hle_callback.c), so whatever the game installed is what runs there - and
+ * whatever it then does, it does out of sight.
+ *
+ * So take the filter first and chain to whoever had it. On a run that never
+ * faults this costs nothing; on a run that ends with an exit code belonging to
+ * nothing in the source it is the difference between a name and another week.
+ */
+static LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter;
+
+static LONG WINAPI es3_last_filter(EXCEPTION_POINTERS *ep)
+{
+    EXCEPTION_RECORD *r = ep ? ep->ExceptionRecord : NULL;
+    fprintf(stderr, "\n[exit] nobody handled %08lX at %p (thread %lu, "
+                    "dispatch %u) - this is the unhandled-exception filter\n",
+            r ? (unsigned long)r->ExceptionCode : 0ul,
+            r ? r->ExceptionAddress : NULL,
+            GetCurrentThreadId(), es3_dispatch_count());
+    es3_report_state("nobody handled it");
+    fflush(stderr);
+    if (g_prev_filter) return g_prev_filter(ep);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void es3_install_crash_handler(void)
 {
     static int done;
@@ -901,6 +954,7 @@ void es3_install_crash_handler(void)
     g_thunk_lock_ready = 1;
     open_trail();
     AddVectoredExceptionHandler(1, es3_veh);
+    g_prev_filter = SetUnhandledExceptionFilter(es3_last_filter);
     es3_watch_exit();
 }
 

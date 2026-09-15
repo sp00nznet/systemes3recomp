@@ -371,9 +371,25 @@ static void note_host_call(CPU *c, uint32_t target)
     if (g_trace_host < 0) g_trace_host = getenv("ES3_TRACE_HOSTCALLS") != NULL;
     if (!g_trace_host) return;
 
+    /* Open addressing, not one slot per hash.
+     *
+     * With a direct-mapped table two addresses that collide evict each other
+     * for ever, and this game has exactly such a pair in its per-frame path:
+     * d3d11+0xF1060 and d3d10_1+0x1D060 both land on slot 0x418. They then
+     * print thousands of times each and bury every genuinely new call after
+     * them - which is the only thing the trace is for when a run ends without
+     * saying why. Probing costs a handful of loads and keeps "once each" true.
+     */
     slot = (target >> 2) & 4095u;
-    if (g_host_seen[slot] == target) return;
-    g_host_seen[slot] = target;
+    {
+        unsigned tries = 0;
+        while (g_host_seen[slot] && g_host_seen[slot] != target && tries < 64u) {
+            slot = (slot + 1u) & 4095u;
+            tries++;
+        }
+        if (g_host_seen[slot] == target) return;
+        g_host_seen[slot] = target;
+    }
 
     /* Which vtable slot it is, when the first stack argument is a COM object
      * whose vtable holds this address. "d3d11.dll+0xF1060" names nothing;

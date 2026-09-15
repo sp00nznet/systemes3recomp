@@ -75,6 +75,27 @@ uint64_t es3_hybrid_invoke(uint32_t ova, hybrid_regs *r, uint32_t *real_args)
      * so far, so it reads 8 KB on a thread with a megabyte reserved. */
     uint32_t teb_base = __readfsdword(0x04), teb_limit = __readfsdword(0xE0C);
     es3_teb_cover(r->esp - (1u << 20), r->esp + 0x1000u);
+    /*
+     * And the whole of this thread's real stack, not a megabyte around wherever
+     * it happened to be the first time it crossed.
+     *
+     * That window was the bug that cost most of a week. es3_teb_cover only
+     * widens, so the range recorded on the first crossing is the range the
+     * thread keeps - and a guest thread with a 32 MB stack crosses near the
+     * top, gets [top-1MB, top+4K], and then descends. The moment esp goes
+     * below StackLimit, RtlDispatchException rejects every handler it finds,
+     * including the __try inside OutputDebugStringA that is supposed to
+     * swallow DBG_PRINTEXCEPTION_C. Nothing catches it, nothing reports it -
+     * an informational exception reaches no vectored handler worth printing
+     * and no unhandled filter - and the process ends with 0x40010006 as its
+     * exit code. Through MSYS that arrives as "exit 6", which is a number
+     * belonging to nothing in the source and was chased as one for a long
+     * time.
+     *
+     * teb_limit is DeallocationStack, the real bottom, which is why it is read
+     * above rather than StackLimit.
+     */
+    es3_teb_cover(teb_limit, teb_base);
     {
         /* Sixty-four, because this game has more than sixteen and the ones
          * past the end were the interesting ones - a thread nobody knew about
