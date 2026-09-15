@@ -78,6 +78,13 @@ static const char JVS_IDENT[] =
 /* What the cabinet's switches are holding right now - see ES3_JVS_SEQ. */
 static uint32_t g_sw_sys, g_sw_p1, g_sw_p2;
 
+/* And what a keyboard or an Xbox pad is holding - see input_poll(), which is
+ * where the mapping is written down. Kept apart from the sequencer's bits so
+ * the two can be OR-ed rather than one erasing the other. */
+static uint32_t g_in_sys, g_in_p1;
+static uint32_t g_analog[8] = { 0x8000u, 0, 0, 0x8000u, 0x8000u, 0x8000u,
+                                0x8000u, 0x8000u };
+
 typedef struct {
     HANDLE handle;               /* the value the game holds as its COM port */
     unsigned char out[FIFO_SIZE];/* node -> game, waiting to be read */
@@ -235,9 +242,12 @@ static void handle_packet(unsigned char dest, const unsigned char *data,
         case 0x20: {                             /* SWINP: players, bytes */
             unsigned players = data[i++], bytes = data[i++], p, b;
             body[len++] = 0x01;
-            body[len++] = (unsigned char)g_sw_sys;   /* test switch lives here */
+            /* The timetable's bits and the live ones, OR-ed: ES3_JVS_SEQ and a
+             * pad in somebody's hands both work, and neither erases the other. */
+            body[len++] = (unsigned char)(g_sw_sys | g_in_sys); /* TEST is here */
             for (p = 0; p < players; p++) {
-                uint32_t w = p == 0 ? g_sw_p1 : p == 1 ? g_sw_p2 : 0;
+                uint32_t w = p == 0 ? (g_sw_p1 | g_in_p1)
+                           : p == 1 ? g_sw_p2 : 0;
                 for (b = 0; b < bytes; b++)
                     body[len++] = (unsigned char)(w >> (8 * (bytes - 1 - b)));
             }
@@ -259,9 +269,12 @@ static void handle_packet(unsigned char dest, const unsigned char *data,
             unsigned ch = data[i++], k;
             body[len++] = 0x01;
             for (k = 0; k < ch; k++) {
-                /* Mid-scale: a centred wheel and released pedals. A pedal that
-                 * read full-on at boot is how a cabinet decides it is broken. */
-                body[len++] = 0x80; body[len++] = 0x00;
+                /* Whatever the wheel and pedals are doing, and mid-scale for a
+                 * channel nothing drives. A pedal that read full-on at boot is
+                 * how a cabinet decides it is broken, so the default matters. */
+                uint32_t v = k < 8 ? g_analog[k] : 0x8000u;
+                body[len++] = (unsigned char)(v >> 8);
+                body[len++] = (unsigned char)v;
             }
             break;
         }
@@ -522,6 +535,157 @@ static void seq_tick(void)
     }
 }
 
+/*
+ * A keyboard and an Xbox pad, wired to the cabinet's switches.
+ *
+ * ES3_JVS_SEQ presses switches on a timetable, which is what a test needs and
+ * nothing like what a person needs. A cabinet has a wheel, two pedals, a start
+ * button, an item button and a coin slot, and every one of them is a JVS bit
+ * or an analog channel this file already reports - so the only thing missing
+ * was somewhere to read a human from.
+ *
+ *   keyboard          pad                  cabinet
+ *   ----------------  -------------------  --------------------------
+ *   Enter             Start                START
+ *   Left Ctrl, Space  A                    ITEM  (dismisses the card prompt)
+ *   Z                 B                    PUSH2
+ *   arrow keys        d-pad                UP / DOWN / LEFT / RIGHT
+ *   Left / Right      left stick X         steering, analog channel 0
+ *   Up / Down         right / left trigger accelerator and brake, channels 1-2
+ *   T                 -                    TEST   (the operator menu)
+ *   S                 Back                 SERVICE
+ *   5                 -                    insert a coin
+ *
+ * Only while a window of this process has the foreground, because
+ * GetAsyncKeyState is global and a game that reads your typing in another
+ * application is a worse bug than no input at all.
+ *
+ * The sequencer's bits and these are OR-ed rather than one overwriting the
+ * other, so ES3_JVS_SEQ still works with a pad plugged in. ES3_NO_INPUT turns
+ * the whole thing off.
+ */
+#define JVS_START 0x8000u
+#define JVS_SERV  0x4000u
+#define JVS_UP    0x2000u
+#define JVS_DOWN  0x1000u
+#define JVS_LEFT  0x0800u
+#define JVS_RIGHT 0x0400u
+#define JVS_ITEM  0x0200u
+#define JVS_PUSH2 0x0100u
+
+typedef struct {
+    DWORD dwPacketNumber;
+    struct {
+        WORD  wButtons;
+        BYTE  bLeftTrigger, bRightTrigger;
+        SHORT sThumbLX, sThumbLY, sThumbRX, sThumbRY;
+    } Gamepad;
+} ES3_XINPUT_STATE;
+typedef DWORD (WINAPI *ES3_XInputGetState)(DWORD, ES3_XINPUT_STATE *);
+
+static int input_off(void)
+{
+    static int off = -1;
+    if (off < 0) off = getenv("ES3_NO_INPUT") != NULL;
+    return off;
+}
+
+static int ours_in_front(void)
+{
+    DWORD pid = 0;
+    HWND h = GetForegroundWindow();
+    if (!h) return 0;
+    GetWindowThreadProcessId(h, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+static ES3_XInputGetState xinput_fn(void)
+{
+    static ES3_XInputGetState fn;
+    static int tried;
+    static const char *dlls[] = { "xinput1_4.dll", "xinput1_3.dll",
+                                  "xinput9_1_0.dll" };
+    unsigned i;
+    if (tried) return fn;
+    tried = 1;
+    for (i = 0; i < 3 && !fn; i++) {
+        HMODULE m = LoadLibraryA(dlls[i]);
+        if (m) fn = (ES3_XInputGetState)GetProcAddress(m, "XInputGetState");
+    }
+    return fn;
+}
+
+static void input_poll(void)
+{
+    static int said, had_coin;
+    uint32_t p1 = 0, sys = 0;
+    int steer = 0, gas = 0, brake = 0, coin = 0;
+    ES3_XInputGetState xi;
+
+    if (input_off()) return;
+
+    if (ours_in_front()) {
+        #define DOWN_(k) ((GetAsyncKeyState(k) & 0x8000) != 0)
+        if (DOWN_(VK_RETURN))                       p1 |= JVS_START;
+        if (DOWN_(VK_LCONTROL) || DOWN_(VK_SPACE))  p1 |= JVS_ITEM;
+        if (DOWN_('Z'))                             p1 |= JVS_PUSH2;
+        if (DOWN_(VK_UP))    { p1 |= JVS_UP;    gas = 255; }
+        if (DOWN_(VK_DOWN))  { p1 |= JVS_DOWN;  brake = 255; }
+        if (DOWN_(VK_LEFT))  { p1 |= JVS_LEFT;  steer = -32000; }
+        if (DOWN_(VK_RIGHT)) { p1 |= JVS_RIGHT; steer = 32000; }
+        if (DOWN_('S'))                             p1 |= JVS_SERV;
+        if (DOWN_('T'))                             sys |= 0x80u;
+        if (DOWN_('5'))                             coin = 1;
+        #undef DOWN_
+    }
+
+    xi = xinput_fn();
+    if (xi) {
+        ES3_XINPUT_STATE st;
+        memset(&st, 0, sizeof st);
+        if (xi(0, &st) == 0) {
+            WORD b = st.Gamepad.wButtons;
+            if (b & 0x0010) p1 |= JVS_START;    /* Start */
+            if (b & 0x0020) p1 |= JVS_SERV;     /* Back  */
+            if (b & 0x1000) p1 |= JVS_ITEM;     /* A     */
+            if (b & 0x2000) p1 |= JVS_PUSH2;    /* B     */
+            if (b & 0x0001) p1 |= JVS_UP;
+            if (b & 0x0002) p1 |= JVS_DOWN;
+            if (b & 0x0004) p1 |= JVS_LEFT;
+            if (b & 0x0008) p1 |= JVS_RIGHT;
+            if (st.Gamepad.bRightTrigger > 30) gas = st.Gamepad.bRightTrigger;
+            if (st.Gamepad.bLeftTrigger  > 30) brake = st.Gamepad.bLeftTrigger;
+            /* A stick beats the arrow keys only when it is actually pushed:
+             * a resting stick reads a few hundred either way. */
+            if (st.Gamepad.sThumbLX > 8000 || st.Gamepad.sThumbLX < -8000)
+                steer = st.Gamepad.sThumbLX;
+            if (!said) {
+                said = 1;
+                fprintf(stderr, "[jvs] an Xbox pad is connected; it is driving "
+                                "the wheel, the pedals and the buttons.\n");
+            }
+        }
+    }
+
+    g_in_p1  = p1;
+    g_in_sys = sys;
+    /* 0x8000 is centre, and the channels the game reads as 16-bit. */
+    g_analog[0] = (uint32_t)(0x8000 + steer / 2);
+    g_analog[1] = (uint32_t)(gas   * 257 / 2 + (gas   ? 0x8000 : 0));
+    g_analog[2] = (uint32_t)(brake * 257 / 2 + (brake ? 0x8000 : 0));
+    if (g_analog[1] > 0xFFFFu) g_analog[1] = 0xFFFFu;
+    if (g_analog[2] > 0xFFFFu) g_analog[2] = 0xFFFFu;
+
+    if (coin && !had_coin) {
+        EnterCriticalSection(&g_port.lock);
+        g_port.coin[0]++;
+        LeaveCriticalSection(&g_port.lock);
+        fprintf(stderr, "[jvs] coin inserted (slot 1 is now at %u)\n",
+                g_port.coin[0]);
+    }
+    had_coin = coin;
+}
+
 static DWORD WINAPI jvs_ticker(void *unused)
 {
     (void)unused;
@@ -529,6 +693,7 @@ static DWORD WINAPI jvs_ticker(void *unused)
     for (;;) {
         Sleep(10);
         seq_tick();
+        input_poll();
         EnterCriticalSection(&g_port.lock);
         finish_read();
         LeaveCriticalSection(&g_port.lock);

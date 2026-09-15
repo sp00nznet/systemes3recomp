@@ -18,11 +18,15 @@
 community hub for sp00nznet's recomp projects.
 
 **Current version: v0.1.0.** The pipeline runs end to end against *Mario Kart
-Arcade GP DX*. The whole game builds to a native executable, **boots through
-the cabinet's entire startup sequence with no error filed**, and **renders its
-attract mode in full 3D** — the course, the karts, the characters, animating,
-at 1360x768 — with **all 495 imports** answered by real DLLs, the cabinet's own
-camera and JVS libraries included.
+Arcade GP DX*. The whole game builds to a native executable, boots through the
+cabinet's startup sequence with no error filed, and **renders its attract mode
+in full 3D** — the course, the karts, the characters, animating, at 1360x768 —
+with **all 495 imports** answered by real DLLs, the cabinet's own camera and
+JVS libraries included.
+
+**Not reliably yet:** about one run in five gets that far. The rest drop out
+partway through the self-check to the operator menu, or quit cleanly. The
+screenshot below is a real frame from a real run, not a representative one.
 
 ![Mario Kart Arcade GP DX attract mode, recompiled](docs/attract-mode.png)
 
