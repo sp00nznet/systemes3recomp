@@ -92,6 +92,14 @@ static const char *allnet_addr_str(void)
     return s;
 }
 
+/* "started_at" with the time in it, in a buffer that outlives the call. */
+static const char *started_pair(const char *when)
+{
+    static char s[64];
+    sprintf_s(s, sizeof s, "\"started_at\":\"%s\"", when);
+    return s;
+}
+
 /* stat=1 is "you may play". The rest is what alAbEx looks for by substring:
  * the keys are scanned for one at a time, so order does not matter and a key
  * the client does not know is ignored. `uri` and `host` are where it goes
@@ -117,28 +125,59 @@ static int reply_body(char *out, size_t n, const char *path)
      * time_zone, status, started_at, yuai_option_limit_at - which is a
      * getControlData response written out.
      */
+    /*
+     * getControlData, field by field.
+     *
+     * The reply is a table rather than one format string because it is what
+     * kills the process. On the cabinet-boot path the game asks for this, logs
+     * its own `ErrorCode:0` for it, and the process is gone a few seconds
+     * later with no handler reached - and answering the same request with
+     * `{"status":0}` instead, the same run survives indefinitely. So one of
+     * these names or values is the trigger.
+     *
+     * ES3_ALLNET_FIELDS=<n> sends only the first n of them, which makes that a
+     * bisection over one rebuild instead of one rebuild per guess.
+     */
     if (strstr(path, "/board/getControlData")) {
-        return sprintf_s(out, n,
-            "{\"net_id\":\"AZZZ0123\","
-            "\"place_id\":\"0123\","
-            "\"game_id\":\"SBZB\","
-            "\"serial_no\":\"271000020001\","
-            "\"status\":0,"
-            "\"store_id\":\"0123\","
-            "\"store_name\":\"RECOMP\","
-            "\"store_nickname\":\"RECOMP\","
-            "\"allnet_game_id\":\"SBZB\","
-            "\"allnet_game_ver\":\"0.01\","
-            "\"line_type\":1,"
-            "\"area_cd_0\":\"1\","
-            "\"area_name_0\":\"W\",\"area_name_1\":\"X\","
-            "\"area_name_2\":\"Y\",\"area_name_3\":\"Z\","
-            "\"country_code\":\"JPN\","
-            "\"time_zone\":\"+09:00\","
-            "\"started_at\":\"%04d-%02d-%02dT%02d:%02d:%02dZ\","
-            "\"yuai_option_limit_at\":\"2099-12-31T23:59:59Z\"}",
-            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-            tm.tm_hour, tm.tm_min, tm.tm_sec);
+        char started[32];
+        const char *kv[64];
+        int nkv = 0, i, used = 0;
+        const char *want = getenv("ES3_ALLNET_FIELDS");
+        int limit = want ? atoi(want) : -1;
+
+        sprintf_s(started, sizeof started, "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+        kv[nkv++] = "\"status\":0";
+        kv[nkv++] = "\"net_id\":\"AZZZ0123\"";
+        kv[nkv++] = "\"place_id\":\"0123\"";
+        kv[nkv++] = "\"current_place_id\":\"0123\"";
+        kv[nkv++] = "\"game_id\":\"SBZB\"";
+        kv[nkv++] = "\"serial_no\":\"271000020001\"";
+        kv[nkv++] = "\"store_id\":\"0123\"";
+        kv[nkv++] = "\"store_name\":\"RECOMP\"";
+        kv[nkv++] = "\"store_nickname\":\"RECOMP\"";
+        kv[nkv++] = "\"allnet_game_id\":\"SBZB\"";
+        kv[nkv++] = "\"allnet_game_ver\":\"0.01\"";
+        kv[nkv++] = "\"line_type\":1";
+        kv[nkv++] = "\"area_cd_0\":\"1\"";
+        kv[nkv++] = "\"area_name_0\":\"W\"";
+        kv[nkv++] = "\"area_name_1\":\"X\"";
+        kv[nkv++] = "\"area_name_2\":\"Y\"";
+        kv[nkv++] = "\"area_name_3\":\"Z\"";
+        kv[nkv++] = "\"country_code\":\"JPN\"";
+        kv[nkv++] = "\"time_zone\":\"+09:00\"";
+        kv[nkv++] = started_pair(started);
+        kv[nkv++] = "\"yuai_option_limit_at\":\"2099-12-31T23:59:59Z\"";
+
+        if (limit >= 0 && limit < nkv) nkv = limit;
+        used += sprintf_s(out + used, n - used, "{");
+        for (i = 0; i < nkv; i++)
+            used += sprintf_s(out + used, n - used, "%s%s",
+                              i ? "," : "", kv[i]);
+        used += sprintf_s(out + used, n - used, "}");
+        return used;
     }
 
     /* The rest of that API - the banapassport calls - with nothing to say. */
