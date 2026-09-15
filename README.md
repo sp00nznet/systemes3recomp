@@ -24,7 +24,11 @@ attract mode in full 3D** — the course, the karts, the characters, animating,
 at 1360x768 — with **all 495 imports** answered by real DLLs, the cabinet's own
 camera and JVS libraries included.
 
-![Mario Kart Arcade GP DX attract mode, recompiled](https://raw.githubusercontent.com/sp00nznet/mariokartdx-systemes3-recomp/main/docs/attract-mode.png)
+![Mario Kart Arcade GP DX attract mode, recompiled](docs/attract-mode.png)
+
+*Read out of the recompiled executable's own swap chain with `ES3_SHOT=`, which
+captures the back buffer before each present. The card prompt is part of the
+attract loop, not an error.*
 
 Getting the last of the way there was three missing instructions hiding behind
 one misread number — see [Where it stops](#where-it-stops-now) and
