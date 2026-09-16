@@ -825,6 +825,26 @@ static void hle_create_file(CPU *c, HleId id)
 
     h = name ? es3_jvs_open(name) : 0;
     if (h) { SetLastError(0); JVS_RET(c, h, 7); return; }
+
+    /* ES3_TRACE_FILES: every distinct path the game opens, once each, with
+     * whether it got a handle. "Does the game read this file at all" is the
+     * first question whenever editing one of its files changes nothing, and
+     * without this it is unanswerable from outside. */
+    if (name && getenv("ES3_TRACE_FILES") && !file_trace_boring(name)) {
+        static char seen[64][160];
+        static int nseen;
+        int i;
+        for (i = 0; i < nseen && strcmp(seen[i], name); i++) {}
+        if (i == nseen && nseen < 64) {
+            strncpy(seen[nseen], name, sizeof seen[0] - 1);
+            seen[nseen][sizeof seen[0] - 1] = 0;
+            nseen++;
+            hle_call_native(c, id);
+            fprintf(stderr, "[file] %s -> %s\n", name,
+                    c->eax == 0xFFFFFFFFu ? "no" : "opened");
+            return;
+        }
+    }
     hle_call_native(c, id);
 }
 
@@ -1032,6 +1052,44 @@ static int refuse_io_emulator(const char *name)
             return 1;
     }
     return 0;
+}
+
+/* The game loads thousands of assets under Data/, and they are never the
+ * question. ES3_TRACE_FILES_ALL keeps them. */
+static int file_trace_boring(const char *n)
+{
+    if (getenv("ES3_TRACE_FILES_ALL")) return 0;
+    while (*n == '.' || *n == '/' || *n == '\\') n++;
+    return (n[0] == 'D' || n[0] == 'd') && (n[1] == 'a') && (n[2] == 't') &&
+           (n[3] == 'a') && (n[4] == '/' || n[4] == '\\');
+}
+
+/*
+ * ES3_TRACE_FILES, for the CRT half.
+ *
+ * A game opens files two ways and only one of them is CreateFile. This one
+ * matters because the cabinet's own data - the operator settings among it -
+ * goes through the CRT: fopen_s(FILE**, path, mode). Argument 1 is the path.
+ */
+static void hle_fopen_s(CPU *c, HleId id)
+{
+    const char *name = es3_arg_string(A32(1));
+    if (name && getenv("ES3_TRACE_FILES") && !file_trace_boring(name)) {
+        static char seen[64][160];
+        static int nseen;
+        int i;
+        for (i = 0; i < nseen && strcmp(seen[i], name); i++) {}
+        if (i == nseen && nseen < 64) {
+            strncpy(seen[nseen], name, sizeof seen[0] - 1);
+            seen[nseen][sizeof seen[0] - 1] = 0;
+            nseen++;
+            hle_call_native(c, id);
+            fprintf(stderr, "[file] fopen %s -> %s\n", name,
+                    c->eax == 0 ? "opened" : "no");
+            return;
+        }
+    }
+    hle_call_native(c, id);
 }
 
 /*
@@ -1304,6 +1362,7 @@ void hle_register_callbacks(void)
     }
     es3_dinput8_snapshot();
     hle_bind("DirectInput8Create", hle_dinput8_create);
+    hle_bind("fopen_s", hle_fopen_s);
     hle_bind("LoadLibraryW", hle_load_library);
     hle_bind("LoadLibraryA", hle_load_library);
     hle_bind("CreateFileW", hle_create_file);
