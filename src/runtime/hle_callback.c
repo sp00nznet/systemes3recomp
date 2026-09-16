@@ -1124,6 +1124,76 @@ void es3_dinput8_snapshot(void)
     if (g_di8_addr) memcpy(g_di8_orig, g_di8_addr, sizeof g_di8_orig);
 }
 
+/*
+ * ES3_TRACE_IOBOARD: how far the game's own USB I/O enumeration gets.
+ *
+ * An ES3 cabinet's switches, wheel and pedals arrive on a Namco I/O board -
+ * USB VID 0x0B9A, PID 0x0C10, which Mario Kart names as literals at
+ * 0x007A8743. The game finds it the ordinary Windows way:
+ * SetupDiGetClassDevsW on an interface GUID, SetupDiEnumDeviceInterfaces,
+ * SetupDiGetDeviceInterfaceDetailW for the device path, CreateFileW on that
+ * path, then DeviceIoControl.
+ *
+ * On a desktop the first of those finds nothing and the rest never happen, so
+ * a port has two choices: answer the board COUNT and leave the board
+ * unopened - which is what this one did, and it is exactly why the game has
+ * an I/O board it never reads a single switch from - or present a synthetic
+ * device and let the game's own driver code run against it.
+ *
+ * The second is the right answer for a platform with more than one title on
+ * it, and it needs the board's IOCTL protocol, which nothing documents. So
+ * measure before building: let the real enumeration run and print every call
+ * and what it answered. Whatever the game asks for after the last thing that
+ * succeeds is the next thing that has to exist.
+ */
+static int io_trace(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("ES3_TRACE_IOBOARD") != NULL;
+    return on;
+}
+
+static void hle_setupdi_classdevs(CPU *c, HleId id)
+{
+    hle_call_native(c, id);
+    if (io_trace())
+        fprintf(stderr, "[io] SetupDiGetClassDevsW(flags %X) -> %08X%s\n",
+                A32(3), c->eax,
+                c->eax == 0xFFFFFFFFu ? "  INVALID_HANDLE_VALUE" : "");
+}
+
+static void hle_setupdi_enum_iface(CPU *c, HleId id)
+{
+    uint32_t idx = A32(3);
+    hle_call_native(c, id);
+    if (io_trace())
+        fprintf(stderr, "[io] SetupDiEnumDeviceInterfaces(#%u) -> %u%s\n",
+                idx, c->eax, c->eax ? "" : "  (no more devices)");
+}
+
+static void hle_setupdi_iface_detail(CPU *c, HleId id)
+{
+    uint32_t detail = A32(2), want = A32(3);
+    hle_call_native(c, id);
+    if (io_trace()) {
+        fprintf(stderr, "[io] SetupDiGetDeviceInterfaceDetailW(size %u) -> %u",
+                want, c->eax);
+        if (c->eax && detail)
+            fprintf(stderr, "  path %ls",
+                    (const wchar_t *)(uintptr_t)(detail + 4u));
+        fprintf(stderr, "\n");
+    }
+}
+
+static void hle_device_io_control(CPU *c, HleId id)
+{
+    uint32_t h = A32(0), code = A32(1), inlen = A32(3), outlen = A32(5);
+    hle_call_native(c, id);
+    if (io_trace())
+        fprintf(stderr, "[io] DeviceIoControl(h %08X, code %08X, in %u, "
+                        "out %u) -> %u\n", h, code, inlen, outlen, c->eax);
+}
+
 static void hle_dinput8_create(CPU *c, HleId id)
 {
     if (g_di8_addr && !getenv("ES3_KEEP_DINPUT_DETOUR") &&
@@ -1363,6 +1433,10 @@ void hle_register_callbacks(void)
     es3_dinput8_snapshot();
     hle_bind("DirectInput8Create", hle_dinput8_create);
     hle_bind("fopen_s", hle_fopen_s);
+    hle_bind("SetupDiGetClassDevsW", hle_setupdi_classdevs);
+    hle_bind("SetupDiEnumDeviceInterfaces", hle_setupdi_enum_iface);
+    hle_bind("SetupDiGetDeviceInterfaceDetailW", hle_setupdi_iface_detail);
+    hle_bind("DeviceIoControl", hle_device_io_control);
     hle_bind("LoadLibraryW", hle_load_library);
     hle_bind("LoadLibraryA", hle_load_library);
     hle_bind("CreateFileW", hle_create_file);
