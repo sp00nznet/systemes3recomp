@@ -188,6 +188,7 @@ void hle_register_board(void);     /* JVS, card reader, camera, authentication *
  * dispatch() turns a thunk back into its guest VA, so lifted code reading the
  * same slot still lands in lifted code. See src/runtime/hle_callback.c. */
 uint32_t es3_callback(uint32_t guest_va);
+unsigned es3_coin_take(void);
 int      es3_plant_callback(uint32_t guest_va);
 
 /* Forward one import to the real function in the host's own copy of the DLL.

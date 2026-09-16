@@ -615,6 +615,30 @@ static ES3_XInputGetState xinput_fn(void)
     return fn;
 }
 
+/*
+ * A coin, for a title whose credit counter this runtime pokes directly.
+ *
+ * g_port.coin[] is the JVS answer, and a game that reads its I/O over the
+ * wire takes its coins from there. A game whose serial board this port does
+ * not speak - Mario Kart talks a drive-board protocol on COM1, not JVS -
+ * never reads it, so the same edge is offered here as a count a game project
+ * can take and turn into whatever that title calls a credit.
+ *
+ * Edges, not a level: one press is one coin, and taking it consumes it, so
+ * two callers cannot both spend the same coin.
+ */
+/* Interlocked rather than the port lock: this is called from lifted code on
+ * the game's own thread, from the first frame, and g_port.lock does not
+ * exist until the game opens the port - which for a title that never opens
+ * one is never. Entering an uninitialised critical section is a crash, and
+ * it is a crash at a plausible-looking place, which is worse. */
+static volatile LONG g_coins_pending;
+
+unsigned es3_coin_take(void)
+{
+    return (unsigned)InterlockedExchange(&g_coins_pending, 0);
+}
+
 static void input_poll(void)
 {
     static int said, had_coin;
@@ -649,6 +673,8 @@ static void input_poll(void)
             if (b & 0x0020) p1 |= JVS_SERV;     /* Back  */
             if (b & 0x1000) p1 |= JVS_ITEM;     /* A     */
             if (b & 0x2000) p1 |= JVS_PUSH2;    /* B     */
+            if (b & 0x0040) coin = 1;           /* left stick click  */
+            if (b & 0x0080) coin = 1;           /* right stick click */
             if (b & 0x0001) p1 |= JVS_UP;
             if (b & 0x0002) p1 |= JVS_DOWN;
             if (b & 0x0004) p1 |= JVS_LEFT;
@@ -679,6 +705,7 @@ static void input_poll(void)
     if (coin && !had_coin) {
         EnterCriticalSection(&g_port.lock);
         g_port.coin[0]++;
+        InterlockedIncrement(&g_coins_pending);
         LeaveCriticalSection(&g_port.lock);
         fprintf(stderr, "[jvs] coin inserted (slot 1 is now at %u)\n",
                 g_port.coin[0]);
