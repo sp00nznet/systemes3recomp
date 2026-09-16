@@ -285,12 +285,32 @@ static void serve(SOCKET s)
     closesocket(s);
 }
 
+/*
+ * One connection must not be able to stop the server.
+ *
+ * This loop accepts and serves on the same thread, and serve() sits in recv()
+ * until it has a whole request - so a client that opens a socket and then
+ * says nothing holds the only accepting thread for ever. Every later request
+ * is never accepted at all, and from the game's side that is not a refusal,
+ * it is a connect that succeeded and an answer that never came.
+ *
+ * That is exactly what happened: PowerOn was served, something else connected
+ * and went quiet, and the getControlData the game logs as RequestURL never
+ * reached this listener - which the game reports as `403 Forbidden`, because
+ * its own client turns a dead exchange into an HTTP status from the table at
+ * 0x0088DEB8.
+ *
+ * A receive timeout is the whole fix: the reply already says Connection:
+ * close, so a connection with nothing to say has nothing to lose.
+ */
 static DWORD WINAPI allnet_thread(void *arg)
 {
     SOCKET ls = (SOCKET)(uintptr_t)arg;
     for (;;) {
         SOCKET s = accept(ls, NULL, NULL);
+        DWORD ms = 5000;
         if (s == INVALID_SOCKET) break;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof ms);
         serve(s);
     }
     return 0;
@@ -516,10 +536,28 @@ static const wchar_t k_local[] = L"127.0.0.1";
 
 void es3_hle_winhttp_connect(CPU *c, HleId id)
 {
-    if (g_trace) {
+    /* Once per distinct host, without ES3_TRACE_NET.
+     *
+     * "The game logged RequestURL: /0.01/board/getControlData and the
+     * listener never saw it" is a two-sided question - was the redirect
+     * called, and did the request then arrive - and only one side of it was
+     * visible. The listener already names every path it is asked for; this
+     * names every host the game is redirected FROM, so a request that goes
+     * missing between them says which half lost it. */
+    {
+        static char seen[8][128];
+        static int nseen;
         const char *s = es3_arg_string(A32(1));
-        fprintf(stderr, "[allnet] WinHttpConnect %s:%u -> 127.0.0.1:%u\n",
-                s ? s : "?", A32(2), allnet_port());
+        int i;
+        if (!s) s = "?";
+        for (i = 0; i < nseen && strcmp(seen[i], s); i++) {}
+        if (i == nseen && nseen < 8) {
+            strncpy(seen[nseen], s, sizeof seen[0] - 1);
+            seen[nseen][sizeof seen[0] - 1] = 0;
+            nseen++;
+            fprintf(stderr, "[allnet] WinHttpConnect %s:%u -> 127.0.0.1:%u\n",
+                    s, A32(2), allnet_port());
+        }
     }
     if (!g_started) allnet_start();
     wr32(c->esp + 4 + 4 * 1, (uint32_t)(uintptr_t)k_local);

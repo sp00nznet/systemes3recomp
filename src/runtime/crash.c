@@ -816,6 +816,34 @@ static LONG WINAPI es3_veh(EXCEPTION_POINTERS *ep)
                  * on a 2 GB address space the likeliest thrower by far is
                  * `operator new`. Say where the address space went. */
                 if (r->ExceptionCode == 0xE06D7363u) es3_report_memory();
+
+                /*
+                 * A stack overflow is nobody's to catch.
+                 *
+                 * Declining STATUS_STACK_OVERFLOW is declining to say anything
+                 * about the one exception a guest almost never handles: the
+                 * search finds no handler, ntdll ends the process, and the log
+                 * stops on a single line that names an address and nothing
+                 * else. That is how a thirty-minute run died unattended with
+                 * no idea what had been recursing.
+                 *
+                 * Lifted code carries the whole guest call graph on the real
+                 * stack - one C frame per guest function plus dispatch between
+                 * them - so an overflow here means runaway recursion in the
+                 * game, and the dispatch trail is a list of what it was going
+                 * round. Print it while there is still stack to print it with;
+                 * the guard page gives us the room SetThreadStackGuarantee
+                 * reserved, and we are still declining afterwards, so nothing
+                 * about who handles it changes.
+                 */
+                if (r->ExceptionCode == 0xC00000FDu) {
+                    fprintf(stderr, "[seh] that is a stack overflow, and a "
+                                    "guest does not catch those - the process "
+                                    "is about to end. Lifted code carries the "
+                                    "guest call graph on the real stack, so "
+                                    "this is runaway recursion in the game:\n");
+                    es3_report_state("what it was recursing through");
+                }
                 fflush(stderr);
                 break;
             }
