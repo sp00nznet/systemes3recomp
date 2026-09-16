@@ -242,15 +242,53 @@ int es3_plant_callback(uint32_t guest_va)
     }
     at[0] = 0xE9;                                  /* jmp rel32 */
     *(int32_t *)(at + 1) = (int32_t)(t - (guest_va + 5));
-    VirtualProtect(at, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), at, 5);
+    (void)old;
+    /*
+     * And it STAYS executable, which is the half of this that took longest.
+     *
+     * guest_load() maps the whole image PAGE_READWRITE on purpose: with the
+     * bytes non-executable, real code that calls an unthunked guest pointer
+     * faults at a guest address and crash.c turns the fault back into a
+     * dispatch. That trap catches every API that simply calls the pointer.
+     *
+     * It does not catch an API that CHECKS the pointer first. DirectInput is
+     * one: IDirectInput8::EnumDevices validates its callback, finds a page
+     * with no execute permission, decides the argument is bad and returns
+     * without calling anything. No callback, no devices, and a HRESULT the
+     * game does not look at - so the whole controller simply is not there.
+     * Restoring the old protection here reproduced that exactly, with the
+     * correct jump sitting at the address unread.
+     *
+     * So the planted stub keeps execute permission. The cost is that the rest
+     * of that one page is executable too, and an unthunked callback landing
+     * in it would run raw bytes instead of faulting - a narrow trade for the
+     * page that has a real stub on it, and the only way a validating API can
+     * be satisfied.
+     */
 
     /* Keep es3_guest_diff() honest: this runtime just rewrote the game's
      * code, and without this the next LoadLibrary would report it as the
      * DLL's doing. */
     es3_guest_resnapshot(guest_va, 5);
     fprintf(stderr, "[callback] %08X now jumps to its own lifted code, so a "
-                    "real DLL handed that pointer reaches it\n", guest_va);
+                    "real DLL handed that pointer reaches it\n"
+                    "           thunk %08X, bytes %02X %02X %02X %02X %02X, "
+                    "lands on %08X\n", guest_va, t,
+            at[0], at[1], at[2], at[3], at[4],
+            (uint32_t)(guest_va + 5 + *(int32_t *)(at + 1)));
+    {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery(at, &mbi, sizeof mbi))
+            fprintf(stderr, "           page %08X protect %lX%s\n",
+                    (uint32_t)(uintptr_t)mbi.BaseAddress, mbi.Protect,
+                    (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                    PAGE_EXECUTE_READWRITE |
+                                    PAGE_EXECUTE_WRITECOPY))
+                        ? " (executable)"
+                        : " (NOT executable - a real DLL calling this will"
+                          " fault instead)");
+    }
     return 1;
 #else
     (void)guest_va;
@@ -947,12 +985,132 @@ static void hle_close_handle(CPU *c, HleId id)
 
 /* A DLL the game loads itself may rewrite the game's code - see
  * es3_guest_diff(). Diff right after it lands, while nothing else has run. */
+/*
+ * The I/O emulator a JConfig tree ships, which a recompilation must not load.
+ *
+ * These DLLs exist to give a cabinet game a gamepad, and they do it by
+ * rewriting the running game's code - so on a static recompilation they patch
+ * bytes nothing executes and change nothing. That was already known and
+ * looked harmless.
+ *
+ * It is not harmless. JVSEmuMK also detours DirectInput8Create and hands the
+ * game its OWN IDirectInput8, whose EnumDevices enumerates nothing and
+ * returns 1. That is deliberate on a patched binary - the emulator intends to
+ * supply input through the game code it rewrote, so it wants the game's own
+ * DirectInput to find nothing. On a recompilation the rewritten code never
+ * runs, so all that is left is the half that disables the real path:
+ *
+ *     [from 007400EE] 72D834B0 [JVSEmuMK.DLL+0x34B0](..., 4, 0073FF60, ...) = 1
+ *
+ * with the emulator out of the way, the same call is DINPUT8.dll+0x4410 -
+ * IDirectInput8W::EnumDevices - and the game's callback runs and finds the
+ * controller.
+ *
+ * So refuse it. The game's stub takes a failed LoadLibrary in its stride, and
+ * what it wanted the DLL for is a thing this runtime does not need.
+ *
+ * ES3_LOAD_IO_EMULATOR=1 loads it anyway, which is how to see a title that
+ * genuinely depends on one.
+ */
+static int refuse_io_emulator(const char *name)
+{
+    static const char *const EMU[] = { "JVSEmuMK", "JVSEmu", "jvsemu" };
+    size_t i;
+    const char *leaf;
+    /* Off by default: the emulator also stands in for the drive board, and
+     * without it the boot sits on DRIVE UNIT SERIAL NUMBER for ever. What it
+     * does to DirectInput is undone in hle_dinput8_create() instead, which
+     * keeps the half that works. ES3_NO_IO_EMULATOR=1 refuses it outright. */
+    if (!name || !getenv("ES3_NO_IO_EMULATOR")) return 0;
+    leaf = strrchr(name, '\\');
+    if (!leaf) leaf = strrchr(name, '/');
+    leaf = leaf ? leaf + 1 : name;
+    for (i = 0; i < sizeof EMU / sizeof EMU[0]; i++) {
+        size_t n = strlen(EMU[i]);
+        if (_strnicmp(leaf, EMU[i], n) == 0 &&
+            (leaf[n] == 0 || _stricmp(leaf + n, ".dll") == 0))
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * Give the game back the real DirectInput.
+ *
+ * The I/O emulator imports DirectInput8Create, GetProcAddress and
+ * VirtualProtect, and what it does with them is detour
+ * dinput8!DirectInput8Create in place so the GAME's call returns the
+ * emulator's own IDirectInput8 - one whose EnumDevices reports nothing and
+ * returns 1. On the patched binary that is coherent: the emulator feeds input
+ * through the game code it rewrote and does not want the game finding devices
+ * by itself. On a recompilation the rewritten code never runs, so the detour
+ * is pure loss, and it is invisible - the game asks for controllers, is told
+ * there are none, and reports nothing.
+ *
+ * The forwarding address is resolved at startup, before the emulator is
+ * loaded, so the original prologue can be kept and put back at the moment the
+ * game actually calls. Restoring it leaves the emulator loaded and every other
+ * thing it does intact - including the drive board, which the boot needs.
+ *
+ * ES3_KEEP_DINPUT_DETOUR leaves the hook alone, which is how to watch the
+ * enumeration find a controller and hand it to nobody.
+ */
+static unsigned char g_di8_orig[16];
+static unsigned char *g_di8_addr;
+
+void es3_dinput8_snapshot(void)
+{
+    HMODULE m = LoadLibraryA("dinput8.dll");
+    if (!m) return;
+    g_di8_addr = (unsigned char *)(void *)GetProcAddress(m, "DirectInput8Create");
+    if (g_di8_addr) memcpy(g_di8_orig, g_di8_addr, sizeof g_di8_orig);
+}
+
+static void hle_dinput8_create(CPU *c, HleId id)
+{
+    if (g_di8_addr && !getenv("ES3_KEEP_DINPUT_DETOUR") &&
+        memcmp(g_di8_addr, g_di8_orig, sizeof g_di8_orig) != 0) {
+        DWORD old;
+        if (VirtualProtect(g_di8_addr, sizeof g_di8_orig,
+                           PAGE_EXECUTE_READWRITE, &old)) {
+            memcpy(g_di8_addr, g_di8_orig, sizeof g_di8_orig);
+            VirtualProtect(g_di8_addr, sizeof g_di8_orig, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), g_di8_addr,
+                                  sizeof g_di8_orig);
+            fprintf(stderr, "[io] something detoured DirectInput8Create; put "
+                            "it back, so the game gets the real DirectInput "
+                            "and finds its controller "
+                            "(ES3_KEEP_DINPUT_DETOUR to leave it)\n");
+        }
+    }
+    hle_call_native(c, id);
+}
+
 static void hle_load_library(CPU *c, HleId id)
 {
     const char *name = es3_arg_string(A32(0));
     char kept[96];
     strncpy(kept, name ? name : "a library", sizeof kept - 1);
     kept[sizeof kept - 1] = 0;
+
+    if (refuse_io_emulator(name)) {
+        static unsigned char said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr,
+                "[io] not loading %s. It patches the game's own code, which a\n"
+                "     recompilation does not run - and it also replaces\n"
+                "     DirectInput with one that reports no controllers, which\n"
+                "     a recompilation very much does run. Refusing it gives\n"
+                "     the game back its own gamepad support "
+                "(ES3_LOAD_IO_EMULATOR=1 to load it).\n", kept);
+        }
+        SetLastError(ERROR_MOD_NOT_FOUND);
+        c->eax = 0;
+        c->esp += 4 + 4;              /* the return address and one argument */
+        return;
+    }
+
     hle_call_native(c, id);
     if (c->eax) es3_guest_diff(kept);
 }
@@ -1144,6 +1302,8 @@ void hle_register_callbacks(void)
         hle_bind("bind", es3_hle_bind);
         hle_bind("recvfrom", es3_hle_recvfrom);
     }
+    es3_dinput8_snapshot();
+    hle_bind("DirectInput8Create", hle_dinput8_create);
     hle_bind("LoadLibraryW", hle_load_library);
     hle_bind("LoadLibraryA", hle_load_library);
     hle_bind("CreateFileW", hle_create_file);

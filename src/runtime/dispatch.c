@@ -254,8 +254,39 @@ void dispatch(CPU *c, uint32_t va)
      * and the return address on the guest stack is it. Printing the target of
      * every dispatch that returns there lists the tasks in the order they are
      * ticked, and the last one printed is the one that did not come back. */
-    if (g_trace_from && rd32(c->esp) == g_trace_from)
-        fprintf(stderr, "[from %08X] %08X\n", g_trace_from, va);
+    /* And what it answered, which for a COM method is the HRESULT and is
+     * usually the whole question - a call that was made and failed looks
+     * exactly like a call that was made and did nothing. */
+    if (g_trace_from && rd32(c->esp) == g_trace_from) {
+        uint32_t a0 = rd32(c->esp + 4), a1 = rd32(c->esp + 8);
+        uint32_t a2 = rd32(c->esp + 12), a3 = rd32(c->esp + 16);
+        char where[160];
+        where[0] = 0;
+#ifdef _WIN32
+        {
+            /* Which DLL, and how far into it. A COM method has no name at run
+             * time, and "module+offset" is what makes it comparable with the
+             * same interface in any other process - a vtable slot that is one
+             * method here and another there is otherwise invisible. */
+            HMODULE m = NULL;
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCSTR)(uintptr_t)va, &m) && m) {
+                char path[MAX_PATH];
+                if (GetModuleFileNameA(m, path, sizeof path)) {
+                    const char *leaf = strrchr(path, '\\');
+                    sprintf(where, " [%s+0x%X]", leaf ? leaf + 1 : path,
+                            (unsigned)(va - (uint32_t)(uintptr_t)m));
+                }
+            }
+        }
+#endif
+        fprintf(stderr, "[from %08X] %08X%s(%08X, %08X, %08X, %08X)",
+                g_trace_from, va, where, a0, a1, a2, a3);
+        dispatch_inner(c, va);
+        fprintf(stderr, " = %08X\n", c->eax);
+        return;
+    }
 
     if (es3_watched(va)) {
         uint32_t from = rd32(c->esp);
