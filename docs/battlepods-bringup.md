@@ -212,6 +212,28 @@ session here - a compiler flag, a struct field and a feature flag were each
 blamed for what was the desktop going away. If two runs disagree, check this
 before believing anything else.
 
+## The dome, and the two-screen look
+
+The game renders for the pod's wrap-around screen, and that projection is a
+post-process chain it picks by name. `DefaultEngine.ini`:
+
+    DefaultPostProcessName=PP_DomeSplit.PP_DomeFull
+
+and `SWArcInput.ini` binds **Shift+1** to `CycleDomeView`.
+
+Both of those are the game's, not the cabinet's. `SWArcGame.upk` declares the
+enum - `DomeView_NONE`, `DomeView_DOME`, **`DomeView_SPLIT`**, `DomeView_DEBUG`,
+`DomeView_MAX` - and `Startup.upk` carries the materials for each:
+`DomeFull_MAT` and `DS_M_DomeFull` for the round projection, and
+**`DomeSplitLeft169`** / **`DomeSplitRight169`** for a pair of 16:9 panels. The
+post-process chains themselves are `PP_Dome`, `PP_DomeFull` and
+`PP_DomeFull_BossWarning`.
+
+So a two-rectangular-screen presentation is a first-class mode the shipped
+game supports and cycles at run time; it does not need anything added. What
+this dump cannot say is whether a CABINET shipped configured that way - that is
+a question about hardware, not about the binary.
+
 ## Diagnostics
 
 All off by default. `--trace` also enables the lifted call stack.
