@@ -1279,6 +1279,108 @@ static void ioboard_claim(uint32_t hub, uint32_t port, uint32_t buf,
     wr32(buf + IOB_STATUS, 1);                /* DeviceConnected */
 }
 
+/*
+ * Answer the board's descriptors.
+ *
+ * 0x220410 is IOCTL_USB_GET_DESCRIPTOR_FROM_NODE_CONNECTION and its input is
+ * a USB_DESCRIPTOR_REQUEST: ConnectionIndex at 0, an eight-byte setup packet
+ * at 4, and room for the answer from 12. wValue carries the descriptor type
+ * in its high byte and the index in its low.
+ *
+ * The real call cannot succeed - there is no device on the port we claimed -
+ * so this answers instead, and the trace said precisely what to answer: a
+ * configuration descriptor, index 0, nine bytes. Nine is the header alone,
+ * which a caller reads to learn wTotalLength before asking for the rest, so
+ * both sizes have to work from the same bytes.
+ *
+ * The shape is a vendor-class interface with one bulk pipe each way, which is
+ * what a JVS-over-USB node looks like: the board name is NA-JV, JVSEmuMK
+ * carries its JVS identity string, and jvs.c already speaks that protocol -
+ * so this is the transport for a conversation the runtime can already hold.
+ *
+ * Returns non-zero when it answered, and the caller then reports success.
+ */
+static int ioboard_descriptor(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
+                              uint32_t outlen, uint32_t bytesret)
+{
+    static const unsigned char DEVICE[18] = {
+        18, 1, 0x00, 0x02,          /* USB 2.00 */
+        0xFF, 0x00, 0x00, 64,       /* vendor class, 64-byte EP0 */
+        0x9A, 0x0B,                 /* idVendor  0x0B9A Namco */
+        0x10, 0x0C,                 /* idProduct 0x0C10 */
+        0x00, 0x01,                 /* bcdDevice 1.00 */
+        1, 2, 3,                    /* iManufacturer/iProduct/iSerial */
+        1                           /* bNumConfigurations */
+    };
+    static const unsigned char CONFIG[32] = {
+        9, 2, 32, 0, 1, 1, 0, 0x80, 50,        /* configuration, 32 total */
+        9, 4, 0, 0, 2, 0xFF, 0, 0, 0,          /* interface, vendor class */
+        7, 5, 0x81, 2, 64, 0, 0,               /* bulk IN  */
+        7, 5, 0x02, 2, 64, 0, 0                /* bulk OUT */
+    };
+    const unsigned char *src;
+    uint32_t port, wValue, wLength, type, have, room, n;
+
+    if (!ioboard_on() || !inbuf || !outbuf) return 0;
+    if (g_iob_port == 0xFFFFFFFFu || hub != g_iob_hub) return 0;
+    port = rd32(inbuf);
+    if (port != g_iob_port) return 0;
+
+    wValue  = rd16(inbuf + 4u + 2u);
+    wLength = rd16(inbuf + 4u + 6u);
+    type    = wValue >> 8;
+
+    /* String descriptors: index 0 is the language list, the rest are the
+     * text the device descriptor points at. The board's own name is NA-JV -
+     * the string the PCB startup screen prints - and the maker tag in both
+     * the game and JVSEmuMK is NBGI. */
+    static unsigned char str_buf[64];
+    if (type == 1u)      { src = DEVICE; have = sizeof DEVICE; }
+    else if (type == 2u) { src = CONFIG; have = sizeof CONFIG; }
+    else if (type == 3u) {
+        static const char *const TEXT[4] = { 0, "NBGI.", "NA-JV", "0001" };
+        uint32_t idx = wValue & 0xFFu, k;
+        if (idx == 0u) {
+            str_buf[0] = 4; str_buf[1] = 3;
+            str_buf[2] = 0x09; str_buf[3] = 0x04;   /* en-US */
+            have = 4;
+        } else if (idx < 4u && TEXT[idx]) {
+            const char *t = TEXT[idx];
+            uint32_t len = (uint32_t)strlen(t);
+            if (len > 30u) len = 30u;
+            str_buf[0] = (unsigned char)(2u + len * 2u);
+            str_buf[1] = 3;
+            for (k = 0; k < len; k++) {
+                str_buf[2 + k * 2] = (unsigned char)t[k];
+                str_buf[3 + k * 2] = 0;
+            }
+            have = 2u + len * 2u;
+        } else {
+            return 0;
+        }
+        src = str_buf;
+    }
+    else return 0;
+
+    if (outlen < 12u) return 0;
+    room = outlen - 12u;
+    n = wLength < have ? wLength : have;
+    if (n > room) n = room;
+    memcpy((void *)(uintptr_t)(outbuf + 12u), src, n);
+    if (bytesret) wr32(bytesret, 12u + n);
+
+    {
+        static int said[4];
+        if (type < 4u && !said[type]) {
+            said[type] = 1;
+            fprintf(stderr, "[io] answered the board's %s descriptor, "
+                            "%u of %u bytes\n",
+                    type == 1u ? "device" : "configuration", n, have);
+        }
+    }
+    return 1;
+}
+
 static void hle_device_io_control(CPU *c, HleId id)
 {
     /* Every argument read BEFORE the call. DeviceIoControl is stdcall with
@@ -1293,6 +1395,7 @@ static void hle_device_io_control(CPU *c, HleId id)
      * caller's ConnectionIndex in the input buffer is the only place the
      * question survives. */
     uint32_t req_port = inbuf ? rd32(inbuf) : 0u;
+    uint32_t bytesret = A32(6);
     hle_call_native(c, id);
     /* 0x220448 is GET_NODE_CONNECTION_INFORMATION_EX and 0x22040C the older
      * GET_NODE_CONNECTION_INFORMATION the walk falls back to; both answer
@@ -1300,6 +1403,11 @@ static void hle_device_io_control(CPU *c, HleId id)
      * port. */
     if (c->eax && (code == 0x00220448u || code == 0x0022040Cu))
         ioboard_claim(h, req_port, outbuf, outlen);
+    if (!c->eax && code == 0x00220410u &&
+        ioboard_descriptor(h, inbuf, outbuf, outlen, bytesret)) {
+        SetLastError(0);
+        c->eax = 1;
+    }
     if (io_trace())
         fprintf(stderr, "[io] DeviceIoControl(h %08X, code %08X, in %u, "
                         "out %u) -> %u\n", h, code, inlen, outlen, c->eax);
