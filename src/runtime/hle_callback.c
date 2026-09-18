@@ -1153,8 +1153,26 @@ static int io_trace(void)
     return on;
 }
 
+static void ioboard_new_scan(void);
+
 static void hle_setupdi_classdevs(CPU *c, HleId id)
 {
+    /*
+     * A scan is starting, so forget which port had the board.
+     *
+     * The claim used to be pinned to the hub HANDLE, and Windows recycles
+     * handle numbers: a closed hub's number comes back as a different hub, so
+     * the board landed on more than one of them in a single pass - the game
+     * counted 2 on one run and 4 on the next, and wants exactly 1 - while on
+     * later passes the handle differed and the claim was refused altogether,
+     * counting 0.
+     *
+     * The scan is the right unit, and SetupDiGetClassDevsW opens one. Claim
+     * the first empty port after each of these and there is exactly one
+     * board every time, whatever the handles happen to be. It is also
+     * title-agnostic, which a hook on one game's enumeration would not be.
+     */
+    ioboard_new_scan();
     hle_call_native(c, id);
     if (io_trace())
         fprintf(stderr, "[io] SetupDiGetClassDevsW(flags %X) -> %08X%s\n",
@@ -1242,6 +1260,12 @@ static int ioboard_on(void)
  * same thing every time. */
 static uint32_t g_iob_port = 0xFFFFFFFFu, g_iob_hub;
 
+static void ioboard_new_scan(void)
+{
+    g_iob_port = 0xFFFFFFFFu;
+    g_iob_hub  = 0;
+}
+
 static void ioboard_claim(uint32_t hub, uint32_t port, uint32_t buf,
                           uint32_t len)
 {
@@ -1262,10 +1286,30 @@ static void ioboard_claim(uint32_t hub, uint32_t port, uint32_t buf,
         if (status != 0) return;              /* something is really there */
         g_iob_hub  = hub;
         g_iob_port = port;
-        fprintf(stderr, "[io] hub %08X port %u is empty; putting a Namco I/O "
-                        "board there (VID %04X PID %04X)\n",
-                hub, port, ES3_IOB_VID, ES3_IOB_PID);
-    } else if (port != g_iob_port || hub != g_iob_hub) {
+        /* Once, not once per scan: the walk runs continuously. */
+        {
+            static int said;
+            if (!said) {
+                said = 1;
+                fprintf(stderr, "[io] hub %08X port %u is empty; putting a "
+                                "Namco I/O board there (VID %04X PID %04X), "
+                                "one per scan\n",
+                        hub, port, ES3_IOB_VID, ES3_IOB_PID);
+            }
+        }
+    } else {
+        /*
+         * One rewrite per scan, and not a second on the strength of the hub
+         * handle matching.
+         *
+         * The walk asks each hub about each of its ports once, and the count
+         * the game reads is one per port that answered like a board. So
+         * exactly one rewritten answer per scan is exactly one board - and
+         * that is the only way to say it that a recycled handle cannot
+         * break. Keying the repeat on (hub, port) instead let another hub's
+         * port 1 match a reused handle number and be rewritten too, which
+         * the game counted as a second board: 2 on one run, 4 on the next.
+         */
         return;
     }
 
@@ -1338,7 +1382,7 @@ static int ioboard_descriptor(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
     if (type == 1u)      { src = DEVICE; have = sizeof DEVICE; }
     else if (type == 2u) { src = CONFIG; have = sizeof CONFIG; }
     else if (type == 3u) {
-        static const char *const TEXT[4] = { 0, "NBGI.", "NA-JV", "0001" };
+        static const char *const TEXT[4] = { 0, "NBGI.", "NA-JV", "271000020001" };
         uint32_t idx = wValue & 0xFFu, k;
         if (idx == 0u) {
             str_buf[0] = 4; str_buf[1] = 3;
@@ -1375,7 +1419,8 @@ static int ioboard_descriptor(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
             said[type] = 1;
             fprintf(stderr, "[io] answered the board's %s descriptor, "
                             "%u of %u bytes\n",
-                    type == 1u ? "device" : "configuration", n, have);
+                    type == 1u ? "device"
+                  : type == 2u ? "configuration" : "string", n, have);
         }
     }
     return 1;
