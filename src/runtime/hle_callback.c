@@ -1020,6 +1020,40 @@ static void jvs_note_caller(CPU *c)
     fprintf(stderr, "[jvs] the port is being driven from %08X\n", from);
 }
 
+/* Who in the game is talking to the card reader.
+ *
+ * Same question as jvs_note_caller, for the other port: the game reads a card
+ * and decides it is not a banapassport without ever asking its server, so the
+ * code that makes that decision is downstream of whoever drives this
+ * conversation. Printed once per distinct caller under ES3_TRACE_CARD.
+ *
+ * It names one frame, and one frame is not always the answer. Here it printed
+ * 007B00D7, which is inside a generic "write all of this buffer" helper at
+ * 007B0090 that loops on the WriteFile pointer in 0081D0D0 - true, and about
+ * the C runtime rather than about cards. The reader driver was found by taking
+ * that address into the lifted source and walking the call graph up instead:
+ *
+ *   007B0090  write the whole buffer      (six call sites, five senders)
+ *   007ABE40  write one PN53x frame       (preamble, length, payload, sum)
+ *   007A9AA0  -> 007A9A80 / 007A9BAC      no direct callers: reached by pointer
+ *   007AA3C0  the reader's state machine, which installs 007A9A80 as a
+ *             callback at 007AA470 and keeps its state around 00943550
+ *
+ * So the address below is where to start, not where to look. */
+static void card_note_caller(CPU *c)
+{
+    static uint32_t seen[8];
+    static int n;
+    uint32_t from;
+    int i;
+    if (!getenv("ES3_TRACE_CARD")) return;
+    from = rd32(c->esp);
+    for (i = 0; i < n; i++) if (seen[i] == from) return;
+    if (n < 8) seen[n++] = from;
+    fprintf(stderr, "[card] the reader is being driven from %08X\n", from);
+    fflush(stderr);
+}
+
 /* WriteFile(h, buf, n, written, ovl) - the request goes straight into the
  * board, which answers into the pipe the reads come out of. */
 static void hle_write_file(CPU *c, HleId id)
@@ -1035,6 +1069,7 @@ static void hle_write_file(CPU *c, HleId id)
     }
     if (es3_card_is_port(A32(0))) {
         uint32_t n = A32(2), written = A32(3);
+        card_note_caller(c);
         es3_card_write(A32(1), n);
         if (written) wr32(written, n);
         SetLastError(0);
@@ -1065,6 +1100,7 @@ static void hle_write_file_ex(CPU *c, HleId id)
     }
     if (es3_card_is_port(A32(0))) {
         uint32_t n = A32(2), ovl = A32(3);
+        card_note_caller(c);
         es3_card_write(A32(1), n);
         if (ovl) { wr32(ovl, 0); wr32(ovl + 4, n); }
         es3_card_complete_write(ovl, n, A32(4));

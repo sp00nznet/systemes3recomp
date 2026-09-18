@@ -84,10 +84,27 @@ static int  g_n_reads, g_n_writes;   /* what the window counts */
 static ULONGLONG g_present_until;
 static int card_trace(void);
 
+/*
+ * ES3_CARD_ALWAYS is for tests, and it does not behave like a cabinet.
+ *
+ * A card that is already in the field when the reader runs its power-on test
+ * is read there, and the game then judges it at boot - so an unrecognised
+ * card is rejected before a player has touched anything, and because the game
+ * stops polling once it has found a card, the tap at the prompt never
+ * happens. That is an artefact of the flag, not of the reader. It stays
+ * because a scripted run has no hands, but it says so once.
+ */
 static int card_always(void)
 {
     static int on = -1;
-    if (on < 0) on = getenv("ES3_CARD_ALWAYS") != NULL;
+    if (on < 0) {
+        on = getenv("ES3_CARD_ALWAYS") != NULL;
+        if (on)
+            fprintf(stderr, "[card] ES3_CARD_ALWAYS: the card is glued to the "
+                            "reader, so the game reads it during its power-on "
+                            "test and never polls again. A cabinet does not "
+                            "behave this way - tap the card instead.\n");
+    }
     return on;
 }
 

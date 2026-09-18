@@ -241,11 +241,51 @@ static void serve(SOCKET s)
         const char *cl = strstr(req, "Content-Length:");
         int want = cl ? atoi(cl + 15) : 0;
         int have = got - (int)(end + 4 - req);
+        /*
+         * Kept rather than dropped when ES3_TRACE_AMID is set.
+         *
+         * The profile half of this API - the `/amid/` family - is not written
+         * down anywhere here, and the only honest way to learn it is the way
+         * the card reader's protocol was learned: record what the game sends
+         * and read it back. The body is base64 of a zlib stream, so this
+         * prints it verbatim and leaves the decoding to a script; teaching
+         * the runtime to inflate would be work in aid of a question that is
+         * answered once.
+         */
+        static int trace_amid = -1;
+        char *keep = NULL;
+        int kept = 0, cap = 0;
+
+        if (trace_amid < 0) trace_amid = getenv("ES3_TRACE_AMID") != NULL;
+        if (trace_amid && want > 0 && want < (1 << 20)) {
+            cap = want + 1;
+            keep = (char *)malloc(cap);
+            if (keep && have > 0) {
+                int n = have > want ? want : have;
+                memcpy(keep, end + 4, n);
+                kept = n;
+            }
+        }
+
         while (have < want) {
             char sink[2048];
             int r = recv(s, sink, sizeof sink, 0);
             if (r <= 0) break;
+            if (keep && kept < cap - 1) {
+                int room = cap - 1 - kept;
+                int n = r > room ? room : r;
+                memcpy(keep + kept, sink, n);
+                kept += n;
+            }
             have += r;
+        }
+
+        if (keep) {
+            keep[kept] = 0;
+            fprintf(stderr, "[amid] %s body %d byte(s):\n%s\n",
+                    path, kept, keep);
+            fflush(stderr);
+            free(keep);
         }
     }
 
