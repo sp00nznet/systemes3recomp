@@ -1150,49 +1150,76 @@ void es3_rs_dump(void)
 #define IO_IDENT_VA    0x1412AD958ull   /* "namco ltd.;NA-JV;Ver4.00;..." */
 #define IO_IDENT_LEN   0x2a
 
-static unsigned char g_io_node[IO_NODE_COUNT][IO_NODE_STRIDE];
 /* OFF by default, and that is a statement about how finished it is rather
- * than caution. With the board answered the game stops drawing the error
- * and stops reaching its render loop at all - it goes looking for board
- * DATA next, and the records here are static, so whatever it waits for
- * never arrives. Until that is done, the default build keeps the
- * behaviour that is known to work. --io-board turns it on. */
+ * than caution. Answering the three accessors is necessary and nowhere near
+ * sufficient: a node record is 0x2EC bytes, the identity is only its first 42,
+ * and something further in holds a POINTER - publishing a zero-filled record
+ * gets past the identity check and then faults dereferencing it.
+ *
+ * So the record layout is the next piece of work and it needs doing properly
+ * rather than guessed at a field at a time. Until then the default build keeps
+ * the behaviour that is known to work: rendering at 43 fps with 03-01 on
+ * screen. --io-board turns this on for whoever picks it up. */
 int g_io_board = 0;
 
-static void io_board_init(void)
+/* Prime the library's OWN state, then let its own code run.
+ *
+ * The first version of this returned values and a node pointer of its own from
+ * the three accessors. That was wrong in a way worth recording: the accessors
+ * are three of seventy-odd places that reach this data, and the other seventy
+ * read the library's globals directly. Answering the accessors from a private
+ * buffer gave the game two different node tables depending on which path it
+ * took to the same record.
+ *
+ * So write the library's own globals instead and let every path agree:
+ *
+ *   0x141F2E310  state, mapped by 0x1400037B0 (1 -> it returns 0)
+ *   0x141F2E334  busy byte; non-zero makes the accessor return -2
+ *   0x141F2E338  nodes on the bus, which the library's init sets to 0
+ *   0x141F2E770  base of the table the init malloc'd, 4 records of 0x2EC
+ */
+static void io_board_prime(void)
 {
-    static int done;
-    if (done) return;
-    done = 1;
-    memset(g_io_node, 0, sizeof g_io_node);
+    static int said;
+    uint64_t base;
+
+    wr32(GVA(0x141F2E310ull), 1);      /* state 1 -> "connected" */
+    wr8 (GVA(0x141F2E334ull), 0);      /* not busy */
+    wr32(GVA(0x141F2E338ull), 1);      /* one node on the bus */
+
+    /* The table is allocated by the library's own init, and that init only
+     * runs once a board has been found - so with no board there is no table,
+     * and there is no table because there is no board. Break the circle by
+     * publishing one: the game's seventy-odd direct readers of this global
+     * then see the same records the accessors hand out, which is the thing
+     * the first version of this got wrong. */
+    base = rd64(GVA(0x141F2E770ull));
+    if (!base) {
+        static unsigned char table[IO_NODE_COUNT][IO_NODE_STRIDE];
+        base = (uint64_t)(uintptr_t)table;
+        wr64(GVA(0x141F2E770ull), base);
+        wr32(GVA(0x141F2E768ull), IO_NODE_COUNT);
+    }
     for (int i = 0; i < IO_NODE_COUNT; i++)
-        memcpy(g_io_node[i], (const void *)(uintptr_t)GVA(IO_IDENT_VA),
-               IO_IDENT_LEN);
-    fprintf(stderr, "[io] board present, %d nodes, ident \"%.42s\"\n",
-            IO_NODE_COUNT, (const char *)g_io_node[0]);
+        memcpy((void *)(uintptr_t)(base + (uint64_t)i * IO_NODE_STRIDE),
+               (const void *)(uintptr_t)GVA(IO_IDENT_VA), IO_IDENT_LEN);
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[io] primed the library: node table %#llx, ident "
+                        "\"%.42s\"\n", (unsigned long long)base,
+                (const char *)(uintptr_t)base);
+    }
 }
 
-/* Returns 1 if this guest address was answered here instead of being run. */
+/* Returns 1 if this address was answered here. Always 0 now: the accessors run
+ * their own code, they just find the data already true. */
 static int io_board_call(CPU *c, uint64_t va)
 {
+    (void)c;
     if (!g_io_board) return 0;
-    switch (va) {
-    case 0x1400037B0ull:                /* state: 0 is "connected and idle" */
-        io_board_init();
-        c->rax = 0;
-        return 1;
-    case 0x1400037F0ull:                /* node count */
-        c->rax = IO_NODE_COUNT;
-        return 1;
-    case 0x140003800ull: {              /* &node[ecx] */
-        uint32_t i = (uint32_t)c->rcx;
-        io_board_init();
-        c->rax = i < IO_NODE_COUNT ? (uint64_t)(uintptr_t)g_io_node[i] : 0;
-        return 1;
-    }
-    default:
-        return 0;
-    }
+    if (va == 0x1400037B0ull || va == 0x1400037F0ull || va == 0x140003800ull)
+        io_board_prime();
+    return 0;
 }
 
 /* --rs-poke: a PROBE, not a fix.
