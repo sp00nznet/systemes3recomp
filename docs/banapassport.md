@@ -53,7 +53,7 @@ cmp al, 0x30 / 0x33 / 0x36 / 0x37
 
 So a card begins `NBGIC` plus a generation digit.
 
-### The generation table, and why this stops here
+### The generation table, and the cipher behind it
 
 `L_007AE4A0` then walks a table of **eight entries at `0x0081DCB0`, stride
 `0x88`**, matching a dword and two bytes from the card. The entries are
@@ -64,15 +64,40 @@ So a card begins `NBGIC` plus a generation digit.
 +08  128 bytes key material
 ```
 
-128 bytes is RSA-1024. Read big-endian the blob is even, so it is not a modulus
-that way round; read little-endian it is odd and 1023 bits, which is the shape
-of one. Either way it is a per-generation key, one for each of the eight card
-generations, and the card's body is protected with it.
+128 bytes per generation, and the algorithm that uses it is **Blowfish**.
 
-**That is the wall.** A card body cannot be fabricated without the matching
-secret, so a working virtual banapassport needs a **dump of a real card** - a
-1 KB MIFARE image - rather than more code. That is data this project does not
-have and cannot derive.
+That is not a guess. The per-generation context is `0x1048` bytes, which is
+exactly Blowfish's 18-dword P-array plus four 256-entry S-boxes
+(72 + 4096 = 4168). `L_007AE1E0` is textbook Blowfish: four S-box lookups at
+`+0x000`, `+0x400`, `+0x800` and `+0xC00` folded as
+`((S0[a] + S1[b]) ^ S2[c]) + S3[d]`, sixteen rounds, and a P-array walked
+**backwards** from `+0x1044` - so that function is the decrypt. `L_007AE270`
+starts at the P-array base and runs forward: the key schedule, expanding the
+`.rdata` key into the context in `.data` at `0x009462A8`, stride `0x1048`,
+indexed by generation.
+
+### So a card can be minted, not only dumped
+
+Blowfish is symmetric. The key is in the binary, the expanded context is in
+the game's own memory, and the same key that decrypts a card encrypts one. A
+card body can therefore be built rather than copied from real hardware:
+
+  1. choose the identity - the plaintext is a dword, a word and a byte, which
+     is what `L_007ACDC0` reads back out at `+0x128`, `+0x12C` and `+0x12E`
+  2. fold the XOR check byte the way `0x007AE576` checks it
+  3. Blowfish-encrypt the eight-byte block with the chosen generation's key
+  4. write `NBGIC` + the generation digit and the field around it, with the
+     `0x0200` version word `0x007AE532` insists on
+
+Generations `6` and `7` are the ones to mint: there are three validators, at
+`0x007ACE40`, `0x007AD183` and `0x007AD3E7`, accepting `0 3 6 7`, `2 5 6 7`
+and `1 4 6 7` respectively, so only 6 and 7 satisfy all three.
+
+What is **not** yet pinned down is the exact byte layout inside the sixteen
+byte field. The offsets in `L_007AE4A0` are read through a stack copy whose
+base moves with several pushes, and guessing them from the listing is how
+mistakes get made. The reliable way is to dump the expanded context from
+`0x009462A8` out of the running game and work against that.
 
 `L_007ACDC0` is the second gate: it parses 16 further bytes at `+0x13F` and
 returns `-400` (`0xFFFFFE70`) when they do not parse. The signature path's own
@@ -109,7 +134,10 @@ game_id=SBZB&ver=0.01&serial=ABGN0020001&ip=192.0.2.1&firm_ver=20007&...
 | `0x007B0090` | generic "write the whole buffer", loops on the `WriteFile` pointer in `0x0081D0D0` |
 | `0x007ACE40` | the card validator - signature, generation digit |
 | `0x007ACDC0` | second gate, parses `+0x13F`, `-400` on failure |
-| `0x007AE4A0` | generation table lookup at `0x0081DCB0` |
+| `0x007AE4A0` | generation table lookup at `0x0081DCB0`, then decrypt and check |
+| `0x007AE1E0` | Blowfish decrypt, 16 rounds, P-array walked backwards |
+| `0x007AE270` | Blowfish key schedule; contexts at `0x009462A8`, stride `0x1048` |
+| `0x007AD183` / `0x007AD3E7` | the other two validators, accepting `2 5 6 7` and `1 4 6 7` |
 | `0x0081DC64` | `"NBGIC"` |
 | `0x0081DC6C` | MIFARE sector 0 key A |
 
