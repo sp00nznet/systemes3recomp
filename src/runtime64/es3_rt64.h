@@ -97,6 +97,8 @@ int es3_bridge_callback(struct _EXCEPTION_POINTERS *ep);
 void es3_trace(uint64_t va, const char *what);
 void es3_trace_dump(const char *why);
 void es3_trace_tail(int n);
+void es3_dump_threads(void);
+void es3_dump_callstack(const char *why);
 void es3_install_crash_handler(void);
 
 extern int g_trace_enabled;
@@ -105,10 +107,14 @@ extern uint64_t g_dispatch_count;
 extern int g_swallow_raise;
 extern uint64_t g_watch_serialize;
 extern uint64_t g_watch_reader;
+extern uint64_t g_watch_alloc;
+extern uint64_t g_addr_scalable_malloc;
 extern __declspec(thread) int g_watch_armed;
 void es3_watch_reader(CPU *c, uint64_t pref);
 extern uint64_t g_log_calls[8];
 extern int g_n_log_calls;
 void es3_log_call(CPU *c, uint64_t pref);
+extern uint64_t g_callees_of;
+void es3_log_callee(uint64_t pref);
 
 #endif /* ES3_RT64_H */

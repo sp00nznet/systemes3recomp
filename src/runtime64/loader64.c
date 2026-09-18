@@ -44,6 +44,7 @@ uint64_t g_addr_GetCommandLineA;
 uint64_t g_addr_ReadFile;
 uint64_t g_addr_GetFileSize;
 uint64_t g_addr_GetFileSizeEx;
+uint64_t g_addr_scalable_malloc;
 
 /* Resolved by name as the import table is walked. A table rather than a chain
  * of strcmps so that adding the next one - and there will be a next one, every
@@ -61,6 +62,7 @@ static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     { "ReadFile",       &g_addr_ReadFile      },
     { "GetFileSize",    &g_addr_GetFileSize   },
     { "GetFileSizeEx",  &g_addr_GetFileSizeEx },
+    { "scalable_malloc", &g_addr_scalable_malloc },
 };
 
 const char *es3_import_name(uint64_t addr)

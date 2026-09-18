@@ -27,12 +27,75 @@ uint64_t g_dispatch_limit = 0;      /* 0 = unlimited */
 uint64_t g_dispatch_count = 0;
 int g_swallow_raise = 0;
 uint64_t g_watch_serialize = 0;
-uint64_t g_watch_reader = 0;   /* --watch-serialize <va> */    /* diagnostic; see the RaiseException note */
+uint64_t g_watch_reader = 0;
+uint64_t g_watch_alloc = 0;   /* --watch-serialize <va> */    /* diagnostic; see the RaiseException note */
 
 /* Bringing a new image up, the trail matters more than the fault: a guest that
  * runs away ends up faulting somewhere unrelated to the mistake, and the last
  * few hundred dispatches before the limit say far more than the address it
  * eventually died on. */
+/* ---- per-thread dispatch counters ----
+ *
+ * A guest thread that was created and entered is not necessarily a guest
+ * thread that is DOING anything, and the two look identical from outside: the
+ * shim logs "entering" for both, and neither ever returns. Counting dispatches
+ * per thread separates them - a worker parked on an event it will never be
+ * signalled on has a count that stops moving, and a thread that never got past
+ * its first call has a count in single figures.
+ */
+#define TC_MAX 64
+static struct { DWORD tid; volatile long n; uint64_t first; } g_tc[TC_MAX];
+static volatile long g_tcn;
+static __declspec(thread) int tc_slot = -1;
+
+static void tc_bump(uint64_t pref)
+{
+    if (tc_slot < 0) {
+        long s = InterlockedIncrement(&g_tcn) - 1;
+        if (s >= TC_MAX) { tc_slot = TC_MAX - 1; return; }
+        g_tc[s].tid = GetCurrentThreadId();
+        g_tc[s].first = pref;
+        tc_slot = (int)s;
+    }
+    g_tc[tc_slot].n++;
+}
+
+/* ---- a call stack for lifted code ----
+ *
+ * The dispatch ring records what RAN, in order, which answers "what happened
+ * before this" and not "who called this". For a buffer that is allocated in
+ * one place and used in another, the second question is the only one that
+ * matters, and a ring of allocator churn cannot answer it.
+ *
+ * Every guest call goes through dispatch(), which calls the lifted body and
+ * returns when it returns - so pushing on the way in and popping on the way
+ * out gives a genuine call stack, per thread, for code that has no symbols and
+ * no frame pointers. Gated on --trace because it costs two writes per call.
+ */
+#define CS_MAX 256
+static __declspec(thread) uint64_t cs_stack[CS_MAX];
+static __declspec(thread) int cs_depth;
+
+void es3_dump_callstack(const char *why)
+{
+    fprintf(stderr, "[stack] %s (depth %d, innermost first)\n", why, cs_depth);
+    int n = cs_depth < 40 ? cs_depth : 40;
+    for (int i = 0; i < n; i++) {
+        uint64_t va = cs_stack[cs_depth - 1 - i];
+        const char *nm = es3_import_name(va);
+        fprintf(stderr, "   %#012llx %s\n", (unsigned long long)va, nm ? nm : "");
+    }
+}
+
+void es3_dump_threads(void)
+{
+    long n = g_tcn < TC_MAX ? g_tcn : TC_MAX;
+    fprintf(stderr, "[threads] %ld guest threads seen\n", n);
+    for (long i = 0; i < n; i++)
+        fprintf(stderr, "   tid %-6lu first=%#012llx dispatches=%ld\n",
+                g_tc[i].tid, (unsigned long long)g_tc[i].first, g_tc[i].n);
+}
+
 static void check_limit(void)
 {
     if (g_dispatch_limit && ++g_dispatch_count >= g_dispatch_limit) {
@@ -225,13 +288,38 @@ __declspec(thread) int g_watch_armed;
 uint64_t g_log_calls[8];
 int g_n_log_calls;
 
+/* --log-callees-of: every function a named function calls, resolved.
+ *
+ * A virtual call has no target in the disassembly - `call [rax+0x28]` says
+ * which SLOT, not which function - so the only way to learn what an engine
+ * subsystem actually dispatches to is to watch it happen. With the shadow call
+ * stack in place the parent frame is known, so this is a one-line filter. */
+uint64_t g_callees_of;
+
+void es3_log_callee(uint64_t pref)
+{
+    if (!g_callees_of || cs_depth < 2) return;
+    if (cs_stack[cs_depth - 2] != g_callees_of) return;
+    const char *nm = es3_import_name(pref);
+    fprintf(stderr, "[callee] %#012llx <- called by %#012llx %s\n",
+            (unsigned long long)pref, (unsigned long long)g_callees_of,
+            nm ? nm : "");
+}
+
 void es3_log_call(CPU *c, uint64_t pref)
 {
     for (int i = 0; i < g_n_log_calls; i++)
         if (g_log_calls[i] == pref) {
-            fprintf(stderr, "[call] %#llx rcx=%#llx rdx=%#llx r8=%#llx\n",
+            /* The return address is sitting at the top of the guest stack -
+             * the lifted caller pushed it before dispatching - so the exact
+             * instruction that made this call is one read away. That is worth
+             * far more than the trail: the trail says which functions ran, and
+             * this says which LINE to go and disassemble. */
+            fprintf(stderr, "[call] %#llx rcx=%#llx rdx=%#llx r8=%#llx "
+                            "<- returns to %#llx\n",
                     (unsigned long long)pref, (unsigned long long)c->rcx,
-                    (unsigned long long)c->rdx, (unsigned long long)c->r8);
+                    (unsigned long long)c->rdx, (unsigned long long)c->r8,
+                    (unsigned long long)rd64(c->rsp));
             if (g_trace_enabled) es3_trace_tail(24);
             return;
         }
@@ -494,6 +582,21 @@ int es3_native_call(CPU *c, uint64_t target)
         }
     }
 
+    /* ---- --watch-alloc: catch the allocation of a known size ----
+     *
+     * The package buffer is allocated by a producer that then fails to fill
+     * it, and nothing in the consumer says who that producer was. But the size
+     * is known exactly - it is the file's - so the allocation itself is a
+     * reliable place to stand. Watching for it names the producer and shows
+     * what it does next, which is where the missing read should be. */
+    if (g_watch_alloc && target == g_addr_scalable_malloc &&
+        f.rcx == g_watch_alloc) {
+        fprintf(stderr, "[alloc] %llu bytes -> %#llx, returns to %#llx\n",
+                (unsigned long long)f.rcx, (unsigned long long)f.rax_out,
+                (unsigned long long)rd64(gsp));
+        if (g_trace_enabled) es3_dump_callstack("package buffer allocation");
+    }
+
     /* GetFileSize on a package.
      *
      * UE3 builds its file reader from the size, precaches against it and then
@@ -515,6 +618,11 @@ int es3_native_call(CPU *c, uint64_t target)
                 fprintf(stderr, "[size] %ls GetFileSize -> %llu\n",
                         p, (unsigned long long)f.rax_out);
             }
+            /* The trail at the PRODUCER. Sizing a package is the step just
+             * before its buffer is allocated and its read enqueued, so this is
+             * where a missing read has to be visible - by the time the consumer
+             * wraps the buffer the decision has already been made. */
+            if (g_trace_enabled) es3_trace_tail(20);
         }
     }
 
@@ -736,9 +844,23 @@ void dispatch(CPU *c, uint64_t target)
 {
     check_limit();
     uint64_t pref = to_preferred(target);
+    tc_bump(pref);
     void (*fn)(CPU *) = lookup(pref);
     if (fn) {
-        if (g_trace_enabled) es3_trace(pref, "call");
+        if (g_trace_enabled) {
+            es3_trace(pref, "call");
+            if (cs_depth < CS_MAX) cs_stack[cs_depth] = pref;
+            cs_depth++;
+            es3_watch_reader(c, pref);
+            es3_log_call(c, pref);
+            es3_log_callee(pref);
+            if (g_watch_serialize && pref == g_watch_serialize) {
+                g_watch_armed = 1; fn(c); g_watch_armed = 0; cs_depth--; return;
+            }
+            fn(c);
+            cs_depth--;
+            return;
+        }
         /* FArchive::Serialize(this, dest, len) - watch what it actually
          * produces. The package summary is read through this one helper, and
          * the engine reports only that the TAG was wrong, never what it was.

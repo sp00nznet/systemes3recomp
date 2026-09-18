@@ -192,6 +192,7 @@ static LONG CALLBACK es3_veh(EXCEPTION_POINTERS *ep)
                 }
             }
         }
+        es3_dump_threads();
         es3_trace_dump("guest C++ throw");
         return EXCEPTION_CONTINUE_SEARCH;
     }

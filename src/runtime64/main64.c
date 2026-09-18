@@ -41,6 +41,10 @@ int main(int argc, char **argv)
             g_watch_serialize = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--watch-reader") && i + 1 < argc)
             g_watch_reader = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--watch-alloc") && i + 1 < argc)
+            g_watch_alloc = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--log-callees-of") && i + 1 < argc)
+            g_callees_of = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--log-call") && i + 1 < argc) {
             char *sp = argv[++i], *tok;
             for (tok = strtok(sp, ","); tok && g_n_log_calls < 8;
