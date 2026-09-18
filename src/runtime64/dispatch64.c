@@ -1150,16 +1150,42 @@ void es3_rs_dump(void)
 #define IO_IDENT_VA    0x1412AD958ull   /* "namco ltd.;NA-JV;Ver4.00;..." */
 #define IO_IDENT_LEN   0x2a
 
-/* OFF by default, and that is a statement about how finished it is rather
- * than caution. Answering the three accessors is necessary and nowhere near
- * sufficient: a node record is 0x2EC bytes, the identity is only its first 42,
- * and something further in holds a POINTER - publishing a zero-filled record
- * gets past the identity check and then faults dereferencing it.
+/* OFF by default: necessary, and not yet sufficient.
  *
- * So the record layout is the next piece of work and it needs doing properly
- * rather than guessed at a field at a time. Until then the default build keeps
- * the behaviour that is known to work: rendering at 43 fps with 03-01 on
- * screen. --io-board turns this on for whoever picks it up. */
+ * The record layout is known now, by tracking the register the node accessor
+ * returns through the poll function at 0x1409E0700 and recording every offset
+ * it is used at. Every field is a scalar - there is no pointer anywhere in the
+ * 0x2EC bytes - so a zero-filled record carrying the right identity is
+ * structurally fine, and the fault that happens with --io-board on is NOT the
+ * record. (An earlier note here said it was; that came from a tracker that let
+ * taint cross a call, which made a C++ `this` and its vtable call look like
+ * part of the node.)
+ *
+ *   +0x000  42  board identity, memcmp'd against .rdata
+ *   +0x109   1  byte field
+ *   +0x187   1  \
+ *   +0x189   3   > byte fields, read together - switches and coins
+ *   +0x18E   1  |
+ *   +0x190   1  |
+ *   +0x19E   2  /
+ *   +0x28A   2  \
+ *   +0x28C   2   > 16-bit analog channels; the caller converts these to float
+ *   +0x28E   2  /  with a subtract-then-scale, which is the calibration
+ *   +0x2A8   2  \
+ *   +0x2AA   2   > 16-bit values compared against 32-bit ones at +0x2AC,
+ *   +0x2B0   2  |  +0x2B4, +0x2CC - analog readings against their limits
+ *   +0x2B2   2  |
+ *   +0x2C8   2  |
+ *   +0x2CA   2  /
+ *   +0x2E8   1  byte, compared - a status or present flag
+ *
+ * So the next suspect is not this table but what ELSE the library's own init
+ * would have built: priming its globals skips sub_140002380, and whatever it
+ * constructs besides the node table is still absent. Running the real init and
+ * then correcting only the globals that say "no board" is the thing to try.
+ *
+ * Until that is settled the default build keeps the behaviour that is known to
+ * work: rendering at 43 fps with 03-01 on screen. */
 int g_io_board = 0;
 
 /* Prime the library's OWN state, then let its own code run.
