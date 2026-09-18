@@ -234,7 +234,16 @@ endif()
 # pcrecomp's own x87 boundary check, built here because this is the project
 # that needs it: an ES3 title imports nine of MSVC's `_CI*` helpers, which pass
 # their arguments in x87 registers and nothing on the stack.
-add_executable(hybrid_fpu_selftest "${ES3_HYBRID_DIR}/hybrid_selftest.c"
-                                   "${ES3_HYBRID_DIR}/hybrid.c")
-target_include_directories(hybrid_fpu_selftest PRIVATE "${ES3_HYBRID_DIR}")
-add_test(NAME hybrid_fpu_selftest COMMAND hybrid_fpu_selftest)
+#
+# 32-bit only, for the same reason as the self-check above and one more: it is
+# written in x86 `__asm`, which MSVC does not accept at all when targeting x64
+# ("nonstandard extension used: '__asm' keyword not supported on this
+# architecture"). Unguarded, a Win64 game project's build fails on this target
+# after its own executable has already linked successfully - which reads as a
+# broken game build and is not one.
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    add_executable(hybrid_fpu_selftest "${ES3_HYBRID_DIR}/hybrid_selftest.c"
+                                       "${ES3_HYBRID_DIR}/hybrid.c")
+    target_include_directories(hybrid_fpu_selftest PRIVATE "${ES3_HYBRID_DIR}")
+    add_test(NAME hybrid_fpu_selftest COMMAND hybrid_fpu_selftest)
+endif()
