@@ -1185,10 +1185,121 @@ static void hle_setupdi_iface_detail(CPU *c, HleId id)
     }
 }
 
+/*
+ * A Namco I/O board on a port that has nothing in it.
+ *
+ * The game finds its board by walking the real USB tree, and every step of
+ * that walk works on a desktop - measured with ES3_TRACE_IOBOARD. What it
+ * never finds is a device with VID 0x0B9A, PID 0x0C10, because none is
+ * plugged in. So rather than answer the board COUNT and leave the board
+ * unopened - which is what a stand-in in a game project used to do, and why
+ * the game had an I/O board it never read a switch from - say that one port
+ * has a board in it and let the game's own driver code do the rest.
+ *
+ * 0x007A7D40 is the port walk, and its tests are explicit about what a board
+ * looks like. With the request buffer at [ebp-0x174]:
+ *
+ *     007A7F1C  cmp dword ptr [ebp - 0x155], 1   ; ConnectionStatus
+ *     007A7F2C  mov cx, word ptr [ebp - 0x168]   ; idVendor
+ *     007A7F38  cmp cx, ax                       ; ...against the wanted one
+ *     007A7F40  mov ax, word ptr [ebp - 0x166]   ; idProduct
+ *     007A7FB4  inc dword ptr [edx]              ; a match bumps the count
+ *
+ * which are offsets 31, 12 and 14 of USB_NODE_CONNECTION_INFORMATION_EX -
+ * ConnectionStatus, and idVendor/idProduct inside the USB_DEVICE_DESCRIPTOR
+ * that starts at 4. DeviceIsHub at 24 decides whether the walk recurses into
+ * the port, so a board must say it is not a hub or the walk goes looking for
+ * children that do not exist.
+ *
+ * Exactly one port, and only a port Windows reports as EMPTY: rewriting a
+ * port with a real device on it would point the game at that device, and
+ * the first thing it does after a match is open it.
+ *
+ * ES3_IOBOARD=1 turns this on. Off by default while the protocol underneath
+ * it is still being worked out - with it on, a game project's board-count
+ * stand-in should step aside (ES3_NO_BOARD=1) so the real walk runs.
+ */
+#define ES3_IOB_VID 0x0B9Au           /* Namco */
+#define ES3_IOB_PID 0x0C10u
+
+/* USB_NODE_CONNECTION_INFORMATION_EX, by byte. */
+#define IOB_VENDOR   12u
+#define IOB_PRODUCT  14u
+#define IOB_CONFIG   22u
+#define IOB_SPEED    23u
+#define IOB_IS_HUB   24u
+#define IOB_STATUS   31u
+
+static int ioboard_on(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("ES3_IOBOARD") != NULL;
+    return on;
+}
+
+/* Claim one empty port, once, and remember which so the answer is stable:
+ * the game asks about the same port more than once and must be told the
+ * same thing every time. */
+static uint32_t g_iob_port = 0xFFFFFFFFu, g_iob_hub;
+
+static void ioboard_claim(uint32_t hub, uint32_t port, uint32_t buf,
+                          uint32_t len)
+{
+    uint32_t status;
+
+    if (!ioboard_on() || !buf || len < 35u) return;
+
+    status = rd32(buf + IOB_STATUS);
+
+    /* One hub AND one port, because a port number alone is not a place: the
+     * walk asks every hub about its own ports, so keying on the number would
+     * put a board on each of them and the game wants exactly one. Ports are
+     * numbered from 1 - a 0 here is a buffer the walk has not filled in, and
+     * claiming it would be claiming nothing. */
+    if (port < 1u) return;
+
+    if (g_iob_port == 0xFFFFFFFFu) {
+        if (status != 0) return;              /* something is really there */
+        g_iob_hub  = hub;
+        g_iob_port = port;
+        fprintf(stderr, "[io] hub %08X port %u is empty; putting a Namco I/O "
+                        "board there (VID %04X PID %04X)\n",
+                hub, port, ES3_IOB_VID, ES3_IOB_PID);
+    } else if (port != g_iob_port || hub != g_iob_hub) {
+        return;
+    }
+
+    wr8(buf + 4u, 18);                        /* bLength */
+    wr8(buf + 5u, 1);                         /* bDescriptorType = DEVICE */
+    wr16(buf + IOB_VENDOR, (uint16_t)ES3_IOB_VID);
+    wr16(buf + IOB_PRODUCT, (uint16_t)ES3_IOB_PID);
+    wr8(buf + IOB_CONFIG, 1);
+    wr8(buf + IOB_SPEED, 1);                  /* full speed */
+    wr8(buf + IOB_IS_HUB, 0);                 /* not a hub: do not recurse */
+    wr32(buf + IOB_STATUS, 1);                /* DeviceConnected */
+}
+
 static void hle_device_io_control(CPU *c, HleId id)
 {
-    uint32_t h = A32(0), code = A32(1), inlen = A32(3), outlen = A32(5);
+    /* Every argument read BEFORE the call. DeviceIoControl is stdcall with
+     * eight of them, so the callee pops 32 bytes and A32(n) afterwards reads
+     * past the frame - which is exactly how the out buffer came back as
+     * null the first time this was written. */
+    uint32_t h = A32(0), code = A32(1), inlen = A32(3);
+    uint32_t outbuf = A32(4), outlen = A32(5), inbuf = A32(2);
+    /* The port being asked about, read now: on an empty port the driver
+     * zeroes the whole output struct, ConnectionIndex included, so
+     * afterwards every empty port looks like port 0 on every hub. The
+     * caller's ConnectionIndex in the input buffer is the only place the
+     * question survives. */
+    uint32_t req_port = inbuf ? rd32(inbuf) : 0u;
     hle_call_native(c, id);
+    /* 0x220448 is GET_NODE_CONNECTION_INFORMATION_EX and 0x22040C the older
+     * GET_NODE_CONNECTION_INFORMATION the walk falls back to; both answer
+     * into the same struct, and both are how the game decides what is on a
+     * port. */
+    if (c->eax && (code == 0x00220448u || code == 0x0022040Cu))
+        ioboard_claim(h, req_port, outbuf, outlen);
     if (io_trace())
         fprintf(stderr, "[io] DeviceIoControl(h %08X, code %08X, in %u, "
                         "out %u) -> %u\n", h, code, inlen, outlen, c->eax);
