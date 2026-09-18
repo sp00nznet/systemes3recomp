@@ -660,6 +660,8 @@ static void input_poll(void)
         if (DOWN_('S'))                             p1 |= JVS_SERV;
         if (DOWN_('T'))                             sys |= 0x80u;
         if (DOWN_('5'))                             coin = 1;
+        /* Not a switch on the cabinet - a card held against the reader. */
+        if (DOWN_('C'))                             es3_card_tap();
         #undef DOWN_
     }
 
@@ -675,6 +677,7 @@ static void input_poll(void)
             if (b & 0x2000) p1 |= JVS_PUSH2;    /* B     */
             if (b & 0x0040) coin = 1;           /* left stick click  */
             if (b & 0x0080) coin = 1;           /* right stick click */
+            if (b & 0x8000) es3_card_tap();     /* Y: tap the card on */
             if (b & 0x0001) p1 |= JVS_UP;
             if (b & 0x0002) p1 |= JVS_DOWN;
             if (b & 0x0004) p1 |= JVS_LEFT;

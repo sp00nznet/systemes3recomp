@@ -92,6 +92,17 @@ void     es3_jvs_cancel(void);
 void     es3_jvs_set_timeouts(uint32_t commtimeouts);
 void     es3_jvs_note(const char *what, uint32_t a, uint32_t b);
 
+/* card.c - the IC card reader on its own serial port, answering PN53x and
+ * presenting a MIFARE Classic 1K backed by a file. */
+int      es3_card_is_port(uint32_t handle);
+uint32_t es3_card_open(const char *name);
+int      es3_card_write(uint32_t buf, uint32_t n);
+uint32_t es3_card_read(uint32_t buf, uint32_t n);
+void     es3_card_post_read(uint32_t buf, uint32_t n, uint32_t ovl, uint32_t routine);
+void     es3_card_complete_write(uint32_t ovl, uint32_t bytes, uint32_t routine);
+void     es3_card_cancel(void);
+void     es3_card_tap(void);      /* a card held against the reader */
+
 /* ---- the import boundary ----
  *
  * A PE reaches its libraries through the IAT: `call dword ptr [__imp_X]` reads

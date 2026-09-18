@@ -794,6 +794,82 @@ static void hle_message_box(CPU *c, HleId id)
 #define JVS_RET(c, val, argc) do { (c)->eax = (uint32_t)(val); \
                                    (c)->esp += 4 + 4 * (argc); } while (0)
 
+/*
+ * The card reader, watched rather than answered.
+ *
+ * Mario Kart's IC card unit is on a COM port that jvs.c deliberately does not
+ * claim (0x005BD830 picks it by name), because answering a card reader in JVS
+ * is worse than not answering it: the game reports -301, turns it into E07-11,
+ * and that error's row in the mode table suppresses the frame loop's task tick
+ * - a black screen instead of a game.
+ *
+ * Which means the protocol has to be learned before it can be spoken, and the
+ * cheapest way to learn it is to let the port work exactly as it does now and
+ * print what crosses it. On this machine COM3 and COM4 are Bluetooth serial
+ * ports: they open, they accept writes, and they never answer, so the reader
+ * is already talking into a void. This just makes the void legible.
+ *
+ * ES3_TRACE_CARD to switch on. Nothing here changes what the game is told.
+ */
+static struct { uint32_t h; int port; } g_card_h[8];
+static int g_card_n;
+
+static int card_trace(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("ES3_TRACE_CARD") != NULL;
+    return on;
+}
+
+/* A COM handle the runtime did not claim, remembered so traffic on it can be
+ * recognised later by handle alone - the name is only available at open. */
+static void card_note_open(const char *name, uint32_t h)
+{
+    const char *p = name;
+    int n;
+
+    if (!card_trace() || !name || !h || h == 0xFFFFFFFFu) return;
+    if (p[0] == '\\' && p[1] == '\\' && p[2] == '.' && p[3] == '\\') p += 4;
+    if (!((p[0] == 'C' || p[0] == 'c') && (p[1] == 'O' || p[1] == 'o') &&
+          (p[2] == 'M' || p[2] == 'm') && p[3] >= '0' && p[3] <= '9')) return;
+    n = p[3] - '0';
+    if (p[4] >= '0' && p[4] <= '9') n = n * 10 + (p[4] - '0');
+    if (g_card_n < 8) {
+        g_card_h[g_card_n].h = h;
+        g_card_h[g_card_n].port = n;
+        g_card_n++;
+        fprintf(stderr, "[card] watching COM%d (handle %08X)\n", n, h);
+    }
+}
+
+static int card_port_of(uint32_t h)
+{
+    int i;
+    if (!card_trace() || !h) return 0;
+    for (i = 0; i < g_card_n; i++)
+        if (g_card_h[i].h == h) return g_card_h[i].port;
+    return 0;
+}
+
+/* Bytes both ways, hex and ASCII. Length matters as much as content here: a
+ * reader protocol is usually framed, and the frame shows up as a repeated
+ * first byte and a length that agrees with it. */
+static void card_dump(int port, const char *dir, uint32_t buf, uint32_t n)
+{
+    const unsigned char *p = (const unsigned char *)(uintptr_t)buf;
+    uint32_t i;
+
+    if (!p || !n) return;
+    if (n > 64) n = 64;
+    fprintf(stderr, "[card] COM%d %s %u:", port, dir, n);
+    for (i = 0; i < n; i++) fprintf(stderr, " %02X", p[i]);
+    fprintf(stderr, "  |");
+    for (i = 0; i < n; i++)
+        fputc(p[i] >= 0x20 && p[i] < 0x7F ? (char)p[i] : '.', stderr);
+    fprintf(stderr, "|\n");
+    fflush(stderr);
+}
+
 static void hle_create_file(CPU *c, HleId id)
 {
     static int off = -1;
@@ -826,6 +902,12 @@ static void hle_create_file(CPU *c, HleId id)
     h = name ? es3_jvs_open(name) : 0;
     if (h) { SetLastError(0); JVS_RET(c, h, 7); return; }
 
+    /* And the card reader, on a different port, answered by card.c. Claimed
+     * here rather than left to the host because the I/O emulator the JConfig
+     * tree ships answers this port itself, badly - see card.c. */
+    h = name ? es3_card_open(name) : 0;
+    if (h) { SetLastError(0); JVS_RET(c, h, 7); return; }
+
     /* ES3_TRACE_FILES: every distinct path the game opens, once each, with
      * whether it got a handle. "Does the game read this file at all" is the
      * first question whenever editing one of its files changes nothing, and
@@ -842,10 +924,12 @@ static void hle_create_file(CPU *c, HleId id)
             hle_call_native(c, id);
             fprintf(stderr, "[file] %s -> %s\n", name,
                     c->eax == 0xFFFFFFFFu ? "no" : "opened");
+            card_note_open(name, c->eax);
             return;
         }
     }
     hle_call_native(c, id);
+    card_note_open(name, c->eax);
 }
 
 /* Configuring a port that is not a port. Every one of these succeeds, because
@@ -853,7 +937,7 @@ static void hle_create_file(CPU *c, HleId id)
  * property of a wire this board does not have. */
 static void comm_ok(CPU *c, HleId id, int argc)
 {
-    if (es3_jvs_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
         es3_jvs_note(hle_name(id), A32(1), A32(2));
         SetLastError(0); JVS_RET(c, 1, argc); return;
     }
@@ -871,6 +955,7 @@ static void hle_set_comm_timeouts(CPU *c, HleId id)
 }
 static void hle_cancel_io_ex(CPU *c, HleId id)
 {
+    if (es3_card_is_port(A32(0))) { es3_card_cancel(); SetLastError(0); JVS_RET(c, 1, 2); return; }
     if (es3_jvs_is_port(A32(0))) { es3_jvs_cancel(); SetLastError(0); JVS_RET(c, 1, 2); return; }
     hle_call_native(c, id);
 }
@@ -880,7 +965,7 @@ static void hle_cancel_io_ex(CPU *c, HleId id)
  * the size field right is coherent; the game overwrites both immediately. */
 static void hle_get_comm_state(CPU *c, HleId id)
 {
-    if (es3_jvs_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
         uint32_t dcb = A32(1);
         if (dcb) { memset((void *)(uintptr_t)dcb, 0, 28); wr32(dcb, 28); }
         SetLastError(0);
@@ -892,7 +977,7 @@ static void hle_get_comm_state(CPU *c, HleId id)
 
 static void hle_get_comm_timeouts(CPU *c, HleId id)
 {
-    if (es3_jvs_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
         uint32_t t = A32(1);
         if (t) memset((void *)(uintptr_t)t, 0, 20);
         SetLastError(0);
@@ -906,7 +991,7 @@ static void hle_get_comm_timeouts(CPU *c, HleId id)
  * looks at this to decide whether the line is alive. */
 static void hle_get_comm_modem_status(CPU *c, HleId id)
 {
-    if (es3_jvs_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
         uint32_t p = A32(1);
         if (p) wr32(p, 0x0020);            /* MS_DSR_ON */
         SetLastError(0);
@@ -948,6 +1033,18 @@ static void hle_write_file(CPU *c, HleId id)
         JVS_RET(c, 1, 5);
         return;
     }
+    if (es3_card_is_port(A32(0))) {
+        uint32_t n = A32(2), written = A32(3);
+        es3_card_write(A32(1), n);
+        if (written) wr32(written, n);
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    {
+        int port = card_port_of(A32(0));
+        if (port) card_dump(port, "<-", A32(1), A32(2));
+    }
     hle_call_native(c, id);
 }
 
@@ -966,19 +1063,49 @@ static void hle_write_file_ex(CPU *c, HleId id)
         JVS_RET(c, 1, 5);
         return;
     }
+    if (es3_card_is_port(A32(0))) {
+        uint32_t n = A32(2), ovl = A32(3);
+        es3_card_write(A32(1), n);
+        if (ovl) { wr32(ovl, 0); wr32(ovl + 4, n); }
+        es3_card_complete_write(ovl, n, A32(4));
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    {
+        int port = card_port_of(A32(0));
+        if (port) card_dump(port, "<-", A32(1), A32(2));
+    }
     hle_call_native(c, id);
 }
 
 static void hle_read_file(CPU *c, HleId id)
 {
+    int port;
+    uint32_t buf, read;
+
     if (es3_jvs_is_port(A32(0))) {
-        uint32_t got = es3_jvs_read(A32(1), A32(2)), read = A32(3);
-        if (read) wr32(read, got);
+        uint32_t got = es3_jvs_read(A32(1), A32(2)), read2 = A32(3);
+        if (read2) wr32(read2, got);
         SetLastError(0);
         JVS_RET(c, 1, 5);
         return;
     }
+    if (es3_card_is_port(A32(0))) {
+        uint32_t got = es3_card_read(A32(1), A32(2)), read2 = A32(3);
+        if (read2) wr32(read2, got);
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
+    /* Captured before the call: ReadFile is stdcall, so by the time it returns
+     * the arguments are no longer on the guest's stack. */
+    port = card_port_of(A32(0));
+    buf  = A32(1);
+    read = A32(3);
     hle_call_native(c, id);
+    if (port && c->eax && read)
+        card_dump(port, "->", buf, rd32(read));
 }
 
 /* ReadFileEx(h, buf, n, ovl, routine) - posted, not performed. It completes
@@ -986,6 +1113,12 @@ static void hle_read_file(CPU *c, HleId id)
  * is where the game's completion routine expects to run. */
 static void hle_read_file_ex(CPU *c, HleId id)
 {
+    if (es3_card_is_port(A32(0))) {
+        es3_card_post_read(A32(1), A32(2), A32(3), A32(4));
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
     if (es3_jvs_is_port(A32(0))) {
         es3_jvs_post_read(A32(1), A32(2), A32(3), A32(4));
         SetLastError(0);
@@ -999,7 +1132,7 @@ static void hle_close_handle(CPU *c, HleId id)
 {
     /* Keep the port: the game closes and reopens it when it decides the board
      * is not answering, and a handle that went away would fail the reopen. */
-    if (es3_jvs_is_port(A32(0))) { SetLastError(0); JVS_RET(c, 1, 1); return; }
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) { SetLastError(0); JVS_RET(c, 1, 1); return; }
     hle_call_native(c, id);
 }
 
