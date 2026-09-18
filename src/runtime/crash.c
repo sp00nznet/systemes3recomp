@@ -415,10 +415,22 @@ static int readable(uint32_t a, size_t n)
  * Same chain syntax, then `=value`. Rewritten on every report, because the
  * game writes its own value back.
  */
+/*
+ * Widths, because a dword is the wrong tool for a flag.
+ *
+ * Several of this game's decisions are single bytes with live neighbours -
+ * the one that puts it online is [[0x959B1C]+3], and 0x00952914 sits next to
+ * two more flags the game reads - so writing four bytes to set one corrupts
+ * the other three. `:b` and `:w` say how much to write; the default stays a
+ * dword, which is what every existing ES3_POKE expects.
+ *
+ *   ES3_POKE=959b1c*+3:b=1     one byte, through a pointer
+ */
 #define POKE_MAX 8
 static struct {
     uint32_t addr, value;
     unsigned nops;
+    unsigned width;                  /* 1, 2 or 4 bytes */
     struct { char op; uint32_t arg; } ops[PEEK_OPS];
 } g_poke[POKE_MAX];
 static unsigned g_npoke;
@@ -432,7 +444,15 @@ static void poke_init(void)
     while (e && *e && g_npoke < POKE_MAX) {
         e = chain(e, &g_poke[g_npoke].addr, &g_poke[g_npoke].nops,
                   g_poke[g_npoke].ops);
-        if (!e || *e != '=') break;
+        if (!e) break;
+        g_poke[g_npoke].width = 4;
+        if (*e == ':') {
+            if (e[1] == 'b' || e[1] == 'B')      g_poke[g_npoke].width = 1;
+            else if (e[1] == 'w' || e[1] == 'W') g_poke[g_npoke].width = 2;
+            else break;
+            e += 2;
+        }
+        if (*e != '=') break;
         g_poke[g_npoke].value = (uint32_t)strtoul(e + 1, &end, 16);
         e = end;
         g_npoke++;
@@ -454,8 +474,13 @@ void es3_apply_pokes(void)
             if (!readable(v, 4)) { bad = 1; break; }
             v = *(const uint32_t *)(uintptr_t)v;
         }
-        if (bad || !readable(v, 4)) continue;
-        *(uint32_t *)(uintptr_t)v = g_poke[k].value;
+        {
+            unsigned w = g_poke[k].width ? g_poke[k].width : 4;
+            if (bad || !readable(v, w)) continue;
+            if (w == 1)      *(uint8_t  *)(uintptr_t)v = (uint8_t)g_poke[k].value;
+            else if (w == 2) *(uint16_t *)(uintptr_t)v = (uint16_t)g_poke[k].value;
+            else             *(uint32_t *)(uintptr_t)v = g_poke[k].value;
+        }
     }
 }
 
