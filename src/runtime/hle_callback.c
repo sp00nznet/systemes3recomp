@@ -1443,6 +1443,72 @@ static int ioboard_descriptor(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
     return 1;
 }
 
+/*
+ * A name for the board, and a Config Manager that will admit to it.
+ *
+ * Enumeration alone is not enough to make the game open a board. Having
+ * matched one, it asks the hub for that port's driver key
+ * (IOCTL_USB_GET_NODE_CONNECTION_DRIVERKEY_NAME, 0x220420) and then hands
+ * the result to 0x007A81F0, which calls CM_Locate_DevNodeW and returns false
+ * unless the Config Manager resolves it:
+ *
+ *     007A823A  call dword ptr [0x81d4f0]   ; CM_Locate_DevNodeW
+ *     007A8240  test eax, eax
+ *     007A8242  je 0x7a8254                 ; CR_SUCCESS: keep going
+ *     007A8244  xor al, al                  ; anything else: not a board
+ *
+ * A port with nothing really in it has no driver key and no devnode, so the
+ * walk finds the board and then disowns it. Both halves have to be answered
+ * together: a name nobody can resolve is no better than no name.
+ *
+ * The name is deliberately one that cannot occur naturally, so the devnode
+ * hook can accept exactly it and nothing else - a CM_Locate_DevNodeW that
+ * said yes to everything would make every unplugged device look present.
+ */
+static const wchar_t k_iob_key[] = L"ES3-SYNTHETIC-NAMCO-IO-BOARD";
+
+/* USB_NODE_CONNECTION_DRIVERKEY_NAME: ConnectionIndex, ActualLength, then
+ * the name. */
+static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
+                             uint32_t outlen)
+{
+    uint32_t need = (uint32_t)(sizeof k_iob_key);
+    if (!ioboard_on() || !inbuf || !outbuf) return 0;
+    /* Port only, not the handle: handle numbers are recycled, and pinning
+     * on one is what made the claim itself land on two hubs at once. Within
+     * a scan we have claimed exactly one port, and the driver key is only
+     * asked of a port the walk already decided was a board. */
+    (void)hub;
+    if (g_iob_port == 0xFFFFFFFFu) return 0;
+    if (rd32(inbuf) != g_iob_port) return 0;
+    if (outlen < 8u) return 0;
+
+    wr32(outbuf + 4u, need);                  /* ActualLength */
+    if (outlen < 8u + need) return 1;         /* a size query: length is enough */
+    memcpy((void *)(uintptr_t)(outbuf + 8u), k_iob_key, need);
+    return 1;
+}
+
+/* CM_Locate_DevNodeW(pdnDevInst, pDeviceID, ulFlags) - CR_SUCCESS is 0. */
+static void hle_cm_locate_devnode(CPU *c, HleId id)
+{
+    uint32_t out = A32(0), name = A32(1);
+    if (ioboard_on() && name &&
+        wcsstr((const wchar_t *)(uintptr_t)name, k_iob_key) != NULL) {
+        static int said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[io] the Config Manager is asked about the "
+                            "synthetic board; saying it exists\n");
+        }
+        if (out) wr32(out, 0x0B9A0C10u);       /* a devnode of our own */
+        c->eax = 0;                            /* CR_SUCCESS */
+        c->esp += 4 + 4 * 3;
+        return;
+    }
+    hle_call_native(c, id);
+}
+
 static void hle_device_io_control(CPU *c, HleId id)
 {
     /* Every argument read BEFORE the call. DeviceIoControl is stdcall with
@@ -1465,6 +1531,26 @@ static void hle_device_io_control(CPU *c, HleId id)
      * port. */
     if (c->eax && (code == 0x00220448u || code == 0x0022040Cu))
         ioboard_claim(h, req_port, outbuf, outlen);
+    /* The name calls: a port the game means to open has to have a path, and
+     * these are where it asks for one. Say whether ours is being asked and
+     * what it got, because a board it cannot name is a board it cannot
+     * open - which is exactly where the enumeration currently stops. */
+    if (ioboard_on() && (code == 0x00220414u || code == 0x00220420u) &&
+        inbuf && g_iob_port != 0xFFFFFFFFu) {
+        static int shown;
+        uint32_t idx = rd32(inbuf);
+        if (shown < 8) {
+            shown++;
+            fprintf(stderr, "[io] %s for port %u%s -> %s\n",
+                    code == 0x00220414u ? "connection name" : "driverkey name",
+                    idx, idx == g_iob_port ? " (OURS)" : "",
+                    c->eax ? "ok" : "FAILED");
+        }
+    }
+    if (code == 0x00220420u && ioboard_driverkey(h, inbuf, outbuf, outlen)) {
+        SetLastError(0);
+        c->eax = 1;
+    }
     if (!c->eax && code == 0x00220410u &&
         ioboard_descriptor(h, inbuf, outbuf, outlen, bytesret)) {
         SetLastError(0);
@@ -1714,6 +1800,7 @@ void hle_register_callbacks(void)
     es3_dinput8_snapshot();
     hle_bind("DirectInput8Create", hle_dinput8_create);
     hle_bind("fopen_s", hle_fopen_s);
+    hle_bind("CM_Locate_DevNodeW", hle_cm_locate_devnode);
     hle_bind("SetupDiGetClassDevsW", hle_setupdi_classdevs);
     hle_bind("SetupDiEnumDeviceInterfaces", hle_setupdi_enum_iface);
     hle_bind("SetupDiGetDeviceInterfaceDetailW", hle_setupdi_iface_detail);
