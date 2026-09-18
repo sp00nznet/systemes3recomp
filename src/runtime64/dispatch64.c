@@ -25,7 +25,8 @@
 int g_trace_enabled = 0;
 uint64_t g_dispatch_limit = 0;      /* 0 = unlimited */
 uint64_t g_dispatch_count = 0;
-int g_swallow_raise = 0;    /* diagnostic; see the RaiseException note */
+int g_swallow_raise = 0;
+uint64_t g_watch_serialize = 0;   /* --watch-serialize <va> */    /* diagnostic; see the RaiseException note */
 
 /* Bringing a new image up, the trail matters more than the fault: a guest that
  * runs away ends up faulting somewhere unrelated to the mistake, and the last
@@ -130,6 +131,13 @@ void es3_set_guest_cmdline(const char *exe, const char *args)
  * performs and a UE3 startup performs a great many.
  */
 int g_trace_files = 0;
+
+/* The private stack a bridged native->guest call runs on, and how much of the
+ * caller's frame travels with it: the return address, the 32 bytes of shadow
+ * space, and room for stack arguments beyond the fourth. 512 bytes covers
+ * anything this game passes to a callback. */
+#define BRIDGE_STACK    (1u << 20)
+#define BRIDGE_ARGCOPY  512u
 
 #define FT_MAX 8192
 static struct { uint64_t h; wchar_t path[260]; int is_text; } g_ft[FT_MAX];
@@ -280,6 +288,12 @@ int es3_native_call(CPU *c, uint64_t target)
         ts->stack    = (size_t)c->rdx;
         c->r8 = (uint64_t)(uintptr_t)es3_thread_shim;
         c->r9 = (uint64_t)(uintptr_t)ts;
+        if (g_trace_files)
+            fprintf(stderr, "[thread] CreateThread guest_fn=%#llx param=%#llx "
+                            "stack=%llu\n",
+                    (unsigned long long)ts->guest_fn,
+                    (unsigned long long)ts->param,
+                    (unsigned long long)ts->stack);
         /* falls through and forwards, now with a start routine that exists */
     }
 
@@ -356,15 +370,50 @@ int es3_native_call(CPU *c, uint64_t target)
      * seek. Either way it is one line of evidence instead of a theory. */
     if (g_trace_files && target == g_addr_ReadFile) {
         const wchar_t *p = NULL;
-        static long nread;
-        long k = InterlockedIncrement(&nread);
-        if (k <= 40) {
+        /* Any read that comes back holding a UE3 package tag, whatever handle
+         * it arrived on. If the summary is being read at all, this sees it -
+         * including on a handle opened by a thread whose CreateFile we missed,
+         * which is the case a handle-keyed filter cannot cover. */
+        const unsigned char *b = (const unsigned char *)(uintptr_t)f.rdx;
+        /* A read that FAILED, or returned short. UE3 reads a package summary
+         * into a zeroed struct and then checks the tag, so a read that quietly
+         * returns nothing presents exactly as "the file contains
+         * unrecognizable data" - the symptom names the file, never the read.
+         * FILE_FLAG_NO_BUFFERING is the usual cause: it requires
+         * sector-aligned offsets, sizes and buffers, and fails the read
+         * outright when they are not. */
+        DWORD got = (f.r9 && !IsBadReadPtr((void *)(uintptr_t)f.r9, 4))
+                    ? *(DWORD *)(uintptr_t)f.r9 : 0xFFFFFFFFu;
+        if (!f.rax_out || (f.r8 && got == 0)) {
             long idx = ft_find(f.rcx);
-            const unsigned char *b = (const unsigned char *)(uintptr_t)f.rdx;
-            fprintf(stderr, "[readany] h=%#llx %ls want=%lu first=%02X %02X %02X %02X\n",
+            fprintf(stderr, "[read-fail] h=%#llx %ls want=%lu got=%lu ok=%llu err=%lu\n",
                     (unsigned long long)f.rcx,
                     idx >= 0 ? g_ft[idx].path : L"(untracked handle)",
-                    (unsigned long)f.r8, b[0], b[1], b[2], b[3]);
+                    (unsigned long)f.r8, (unsigned long)got,
+                    (unsigned long long)f.rax_out, GetLastError());
+        }
+        /* Everything that is not config or shader noise, INCLUDING reads on a
+         * handle we never saw opened. A path-keyed filter silently drops those,
+         * and "no reads happened" is a conclusion worth being sure of before
+         * building a theory on it. */
+        {
+            long ix = ft_find(f.rcx);
+            const wchar_t *pp = ix >= 0 ? g_ft[ix].path : NULL;
+            const wchar_t *ext = pp ? wcsrchr(pp, L'.') : NULL;
+            int noisy = ext && (!_wcsicmp(ext, L".ini") || !_wcsicmp(ext, L".bin") ||
+                                !_wcsicmp(ext, L".INT"));
+            if (!noisy)
+                fprintf(stderr, "[rd] h=%#llx %ls want=%lu first=%02X %02X %02X %02X\n",
+                        (unsigned long long)f.rcx, pp ? pp : L"(untracked)",
+                        (unsigned long)f.r8, b[0], b[1], b[2], b[3]);
+        }
+        if (b && f.r8 >= 4 &&
+            b[0] == 0xC1 && b[1] == 0x83 && b[2] == 0x2A && b[3] == 0x9E) {
+            long idx = ft_find(f.rcx);
+            fprintf(stderr, "[pkg] summary read on h=%#llx %ls (%lu bytes)\n",
+                    (unsigned long long)f.rcx,
+                    idx >= 0 ? g_ft[idx].path : L"(untracked handle)",
+                    (unsigned long)f.r8);
         }
         if (ft_is_pkg(f.rcx, &p)) {
             LARGE_INTEGER pos = {0}, zero = {0};
@@ -374,6 +423,30 @@ int es3_native_call(CPU *c, uint64_t target)
                             " %02X %02X %02X %02X\n",
                     p, (unsigned long)f.r8, (long long)pos.QuadPart,
                     b[0], b[1], b[2], b[3]);
+        }
+    }
+
+    /* GetFileSize on a package.
+     *
+     * UE3 builds its file reader from the size, precaches against it and then
+     * serialises the summary out of that buffer. A size of zero means it never
+     * issues a read at all, leaves the summary zeroed, and reports the TAG as
+     * wrong - which is the BinaryFormat error, naming the file and saying
+     * nothing about the size. So the size is worth seeing even when it looks
+     * uninteresting. */
+    if (g_trace_files &&
+        (target == g_addr_GetFileSize || target == g_addr_GetFileSizeEx)) {
+        const wchar_t *p = NULL;
+        if (ft_is_pkg(f.rcx, &p)) {
+            if (target == g_addr_GetFileSizeEx) {
+                LARGE_INTEGER *out = (LARGE_INTEGER *)(uintptr_t)f.rdx;
+                fprintf(stderr, "[size] %ls GetFileSizeEx ok=%llu -> %lld\n",
+                        p, (unsigned long long)f.rax_out,
+                        out ? (long long)out->QuadPart : -1);
+            } else {
+                fprintf(stderr, "[size] %ls GetFileSize -> %llu\n",
+                        p, (unsigned long long)f.rax_out);
+            }
         }
     }
 
@@ -488,18 +561,60 @@ int es3_bridge_callback(EXCEPTION_POINTERS *ep)
     CPU c;
     memset(&c, 0, sizeof c);
     c.rax = ctx->Rax; c.rcx = ctx->Rcx; c.rdx = ctx->Rdx; c.rbx = ctx->Rbx;
-    c.rsp = ctx->Rsp; c.rbp = ctx->Rbp; c.rsi = ctx->Rsi; c.rdi = ctx->Rdi;
+    c.rbp = ctx->Rbp; c.rsi = ctx->Rsi; c.rdi = ctx->Rdi;
     c.r8  = ctx->R8;  c.r9  = ctx->R9;  c.r10 = ctx->R10; c.r11 = ctx->R11;
     c.r12 = ctx->R12; c.r13 = ctx->R13; c.r14 = ctx->R14; c.r15 = ctx->R15;
     memcpy(c.xmm, &ctx->Xmm0, sizeof c.xmm);
 
     uint64_t retaddr = rd64(ctx->Rsp);
 
+    /* ---- the bridged call runs on its own stack ----
+     *
+     * NOT on ctx->Rsp, which is the obvious thing and is wrong. By the time a
+     * vectored handler runs, the kernel has already pushed the EXCEPTION_RECORD
+     * and the CONTEXT below the faulting RSP, and this function's own frames sit
+     * below those. Running the lifted callee from ctx->Rsp makes it push
+     * downwards over all of it - over the CONTEXT it is about to return
+     * through, and over the locals of the handler doing the returning.
+     *
+     * It does not crash. It quietly corrupts, and the damage surfaces as the
+     * callee reading plausible-looking rubbish: this presented as UE3 rejecting
+     * Core.upk because its package tag read back as 23 00 69 00 - UTF-16 for
+     * "#i", text from somewhere else entirely on that stack.
+     *
+     * So: a private stack per thread, with the top of the caller's frame copied
+     * across so the callee still finds its return address, its shadow space and
+     * any stack arguments at the offsets it expects.
+     */
+    static __declspec(thread) uint8_t *tls_stack;
+    if (!tls_stack) {
+        tls_stack = (uint8_t *)VirtualAlloc(NULL, BRIDGE_STACK,
+                                            MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!tls_stack) return 0;           /* let it fault honestly instead */
+    }
+    uint8_t *top = tls_stack + BRIDGE_STACK - BRIDGE_ARGCOPY;
+    /* Keep the 16-byte phase of the original RSP: the ABI requires RSP+8 to be
+     * 16-aligned at entry, and the callee's own SSE spills depend on it. */
+    top -= ((uintptr_t)top - (uintptr_t)ctx->Rsp) & 15u;
+    memcpy(top, (const void *)(uintptr_t)ctx->Rsp, BRIDGE_ARGCOPY);
+    c.rsp = (uint64_t)(uintptr_t)top;
+
     if (g_trace_enabled) es3_trace(fn, "callback");
     dispatch(&c, fn);                       /* the callee's RET does rsp += 8 */
 
+    /* Only the 32 bytes of shadow space travel back.
+     *
+     * Copying the whole window back looked harmless - it was copied in from
+     * the same place moments earlier, so unchanged bytes write themselves - but
+     * it is not: the window reaches past the caller's stack arguments into the
+     * caller's OWN frame, and restoring a stale copy of that undoes whatever
+     * the caller had done to it. That regressed the run from 14.7M dispatches
+     * to 1.5M. The shadow space is the only part of the caller's frame a callee
+     * owns outright. */
+    memcpy((void *)(uintptr_t)(ctx->Rsp + 8), top + 8, 32);
+
     ctx->Rip = retaddr;
-    ctx->Rsp = c.rsp;
+    ctx->Rsp = ctx->Rsp + 8;                /* what the callee's RET left */
     ctx->Rax = c.rax;
     /* Callee-saved registers are the guest's to preserve, and the lifted body
      * did preserve them - in the CPU. Copy them back, or the native caller
@@ -524,7 +639,14 @@ static DWORD WINAPI es3_thread_shim(void *arg)
         return 1;
     }
     c.rcx = ts.param;                 /* the thread parameter, first argument */
+    if (g_trace_files)
+        fprintf(stderr, "[thread] %lu entering guest %#llx\n",
+                GetCurrentThreadId(), (unsigned long long)ts.guest_fn);
     es3_call_guest(&c, ts.guest_fn);
+    if (g_trace_files)
+        fprintf(stderr, "[thread] %lu guest %#llx returned %#llx\n",
+                GetCurrentThreadId(), (unsigned long long)ts.guest_fn,
+                (unsigned long long)c.rax);
     return (DWORD)c.rax;
 }
 
@@ -549,6 +671,37 @@ void dispatch(CPU *c, uint64_t target)
     void (*fn)(CPU *) = lookup(pref);
     if (fn) {
         if (g_trace_enabled) es3_trace(pref, "call");
+        /* FArchive::Serialize(this, dest, len) - watch what it actually
+         * produces. The package summary is read through this one helper, and
+         * the engine reports only that the TAG was wrong, never what it was.
+         * Zero means nothing was written; a plausible value read at the wrong
+         * offset means something else. One number decides it. */
+        /* Armed by the summary parser, fired by the very next serialize.
+         *
+         * The serialize helper is shared by every archive in the engine - it
+         * runs constantly, on strings and on object data - so watching it
+         * unconditionally buries the one call that matters among thousands
+         * that do not. Arming on the caller makes the output exactly the read
+         * whose result the tag check is about to reject. */
+        static __declspec(thread) int armed;
+        if (g_watch_serialize && pref == g_watch_serialize) {
+            armed = 1;
+            fn(c);
+            armed = 0;
+            return;
+        }
+        if (armed && pref == 0x14000B900ull) {
+            uint64_t dst = c->rdx, len = c->r8, ar = c->rcx;
+            armed = 0;
+            fn(c);
+            if (dst && len >= 4)
+                fprintf(stderr, "[summary-tag] archive=%#llx dest=%#llx len=%llu"
+                                " -> %02X %02X %02X %02X\n",
+                        (unsigned long long)ar, (unsigned long long)dst,
+                        (unsigned long long)len,
+                        rd8(dst), rd8(dst + 1), rd8(dst + 2), rd8(dst + 3));
+            return;
+        }
         fn(c);
         return;
     }

@@ -42,6 +42,8 @@ uint64_t g_addr_WriteFile;
 uint64_t g_addr_GetCommandLineW;
 uint64_t g_addr_GetCommandLineA;
 uint64_t g_addr_ReadFile;
+uint64_t g_addr_GetFileSize;
+uint64_t g_addr_GetFileSizeEx;
 
 /* Resolved by name as the import table is walked. A table rather than a chain
  * of strcmps so that adding the next one - and there will be a next one, every
@@ -57,6 +59,8 @@ static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     { "GetCommandLineW", &g_addr_GetCommandLineW },
     { "GetCommandLineA", &g_addr_GetCommandLineA },
     { "ReadFile",       &g_addr_ReadFile      },
+    { "GetFileSize",    &g_addr_GetFileSize   },
+    { "GetFileSizeEx",  &g_addr_GetFileSizeEx },
 };
 
 const char *es3_import_name(uint64_t addr)

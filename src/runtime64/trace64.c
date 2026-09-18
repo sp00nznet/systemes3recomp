@@ -19,7 +19,12 @@
 #include <string.h>
 #include <windows.h>
 
-#define TRACE_N 4096
+/* A megabyte of entries. The tail of a UE3 startup is dominated by allocator
+ * churn - scalable_malloc/free around every string - so a few thousand entries
+ * cover a fraction of a second of guest time and the interesting call is
+ * already gone by the time anything dumps. 16 MB of ring is cheap next to
+ * losing the one line that matters. */
+#define TRACE_N (1 << 20)
 
 typedef struct { uint64_t va; const char *what; } trace_ent_t;
 

@@ -75,6 +75,8 @@ extern int g_trace_files;
 extern uint64_t g_addr_GetCommandLineW;
 extern uint64_t g_addr_GetCommandLineA;
 extern uint64_t g_addr_ReadFile;
+extern uint64_t g_addr_GetFileSize;
+extern uint64_t g_addr_GetFileSizeEx;
 
 /* The command line the GUEST sees, which is not the runtime's. */
 void es3_set_guest_cmdline(const char *exe, const char *args);
@@ -100,5 +102,6 @@ extern int g_trace_enabled;
 extern uint64_t g_dispatch_limit;
 extern uint64_t g_dispatch_count;
 extern int g_swallow_raise;
+extern uint64_t g_watch_serialize;
 
 #endif /* ES3_RT64_H */

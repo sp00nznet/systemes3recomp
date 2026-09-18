@@ -37,6 +37,8 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--trace")) g_trace_enabled = 1;
         else if (!strcmp(argv[i], "--swallow-raise")) g_swallow_raise = 1;
         else if (!strcmp(argv[i], "--trace-files")) g_trace_files = 1;
+        else if (!strcmp(argv[i], "--watch-serialize") && i + 1 < argc)
+            g_watch_serialize = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--game-args") && i + 1 < argc)
             game_args = argv[++i];
         else if (!strcmp(argv[i], "--limit") && i + 1 < argc)
