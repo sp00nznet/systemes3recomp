@@ -128,9 +128,48 @@ static LONG CALLBACK es3_veh(EXCEPTION_POINTERS *ep)
     if (code == 0x406D1388u)
         return EXCEPTION_CONTINUE_EXECUTION;
 
-    /* A C++ throw is the guest working, not failing - its own handler is
-     * further up, in lifted code. */
-    if (code == 0xE06D7363u || code == (DWORD)DBG_PRINTEXCEPTION_C)
+    /* A C++ throw carries the thrown type's name, and in a build with no
+     * symbols and no log that name is most of the diagnosis. The record holds
+     * a ThrowInfo whose members are RVAs from the module base in
+     * ExceptionInformation[3] - which is how a 64-bit throw stays
+     * position-independent. */
+    if (code == 0xE06D7363u) {
+        const EXCEPTION_RECORD *r = ep->ExceptionRecord;
+        /* UE3 throws its error MESSAGE: appError does `throw TEXT("...")`, so
+         * the thrown type is wchar_t* and the object is a pointer to it. That
+         * string is the engine's own diagnosis, in English, which is worth
+         * more than any amount of dispatch trail - and in a shipping build
+         * with the log compiled out it is the only place the reason appears.
+         *
+         * Guarded, because the object is guest memory and a wrong guess about
+         * the layout would fault inside the handler for the original fault. */
+        if (r->NumberParameters >= 2 && r->ExceptionInformation[1]) {
+            __try {
+                const wchar_t *msg = *(const wchar_t **)r->ExceptionInformation[1];
+                if (msg && !IsBadReadPtr(msg, 2))
+                    fprintf(stderr, "[throw] guest threw: %ls\n", msg);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                fprintf(stderr, "[throw] (thrown object not readable as a string)\n");
+            }
+        }
+        if (r->NumberParameters >= 4 &&
+            r->ExceptionInformation[0] == 0x19930520u) {
+            char *mod = (char *)r->ExceptionInformation[3];
+            const int *ti = (const int *)r->ExceptionInformation[2];
+            if (mod && ti && ti[3]) {
+                const int *cta = (const int *)(mod + ti[3]);
+                if (cta[0] > 0) {
+                    const int *ct = (const int *)(mod + cta[1]);
+                    /* TypeDescriptor: vftable, spare, then the decorated name */
+                    const char *nm = (const char *)(mod + ct[1]) + 16;
+                    fprintf(stderr, "[throw] C++ exception of type '%s'\n", nm);
+                }
+            }
+        }
+        es3_trace_dump("guest C++ throw");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (code == (DWORD)DBG_PRINTEXCEPTION_C)
         return EXCEPTION_CONTINUE_SEARCH;
 
     es3_seh(ep);

@@ -36,6 +36,12 @@ uint64_t g_addr_RaiseException;
 uint64_t g_addr_initterm;
 uint64_t g_addr_initterm_e;
 uint64_t g_addr_CreateThread;
+uint64_t g_addr_CreateFileW;
+uint64_t g_addr_CreateFileA;
+uint64_t g_addr_WriteFile;
+uint64_t g_addr_GetCommandLineW;
+uint64_t g_addr_GetCommandLineA;
+uint64_t g_addr_ReadFile;
 
 /* Resolved by name as the import table is walked. A table rather than a chain
  * of strcmps so that adding the next one - and there will be a next one, every
@@ -45,6 +51,12 @@ static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     { "_initterm",      &g_addr_initterm      },
     { "_initterm_e",    &g_addr_initterm_e    },
     { "CreateThread",   &g_addr_CreateThread  },
+    { "CreateFileW",    &g_addr_CreateFileW   },
+    { "CreateFileA",    &g_addr_CreateFileA   },
+    { "WriteFile",      &g_addr_WriteFile     },
+    { "GetCommandLineW", &g_addr_GetCommandLineW },
+    { "GetCommandLineA", &g_addr_GetCommandLineA },
+    { "ReadFile",       &g_addr_ReadFile      },
 };
 
 const char *es3_import_name(uint64_t addr)
@@ -239,6 +251,14 @@ int es3_load_image(const char *path)
             (unsigned long long)g_image.text_lo, (unsigned long long)g_image.text_hi);
     fprintf(stderr, "[loader] entry %#llx, %d imports resolved, %d missing\n",
             (unsigned long long)g_image.entry, g_nimports, nmissing);
+
+    /* Say which intercepts actually bound. An intercept whose name the image
+     * does not import stays zero and then silently never fires, which looks
+     * exactly like the guest not calling that function at all - a false
+     * conclusion that is expensive to reach any other way. */
+    for (size_t q = 0; q < sizeof k_intercepts / sizeof k_intercepts[0]; q++)
+        fprintf(stderr, "[loader] intercept %-18s %s\n", k_intercepts[q].name,
+                *k_intercepts[q].slot ? "bound" : "NOT IMPORTED - will never fire");
 
     free(raw);
     return 1;

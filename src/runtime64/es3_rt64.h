@@ -68,6 +68,16 @@ extern uint64_t g_addr_RaiseException;
 extern uint64_t g_addr_initterm;
 extern uint64_t g_addr_initterm_e;
 extern uint64_t g_addr_CreateThread;
+extern uint64_t g_addr_CreateFileW;
+extern uint64_t g_addr_CreateFileA;
+extern uint64_t g_addr_WriteFile;
+extern int g_trace_files;
+extern uint64_t g_addr_GetCommandLineW;
+extern uint64_t g_addr_GetCommandLineA;
+extern uint64_t g_addr_ReadFile;
+
+/* The command line the GUEST sees, which is not the runtime's. */
+void es3_set_guest_cmdline(const char *exe, const char *args);
 
 /* Enter a lifted function from the runtime - for a guest callback a real DLL
  * would otherwise call directly. */

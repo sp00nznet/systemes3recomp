@@ -92,6 +92,102 @@ static uint64_t to_preferred(uint64_t real)
 typedef struct { uint64_t guest_fn, param; size_t stack; } thread_start_t;
 static DWORD WINAPI es3_thread_shim(void *arg);
 
+/* ---- the guest's command line ----
+ *
+ * GetCommandLineW returns the HOST process's command line, which is the
+ * runtime's: "battlepods.exe SWArcGame-Win64-Shipping.exe --trace-files".
+ * The guest then parses that as its own. UE3 reads the command line for the
+ * map to load, the game name and every -switch it honours, so handing it the
+ * runtime's arguments means it is configured by accident - and a stray token
+ * is not diagnosed, it just changes behaviour.
+ *
+ * So the guest gets a command line of its own: argv[0] as the game would have
+ * been launched, plus whatever --game-args supplies.
+ */
+static wchar_t g_guest_cmdline[2048];
+static char    g_guest_cmdline_a[2048];
+
+void es3_set_guest_cmdline(const char *exe, const char *args)
+{
+    _snwprintf(g_guest_cmdline, 2047, L"\"%hs\"%hs%hs",
+               exe, args && *args ? " " : "", args ? args : "");
+    g_guest_cmdline[2047] = 0;
+    _snprintf(g_guest_cmdline_a, 2047, "\"%s\"%s%s",
+              exe, args && *args ? " " : "", args ? args : "");
+    g_guest_cmdline_a[2047] = 0;
+    fprintf(stderr, "[main] guest command line: %ls\n", g_guest_cmdline);
+}
+
+/* ---- file tracing ----
+ *
+ * UE3 writes its own diagnosis. It logs what it loads, what it cannot find and
+ * what it is about to fail on, then calls appError - so the log says in English
+ * what a dispatch trail can only hint at. But it writes through WriteFile on a
+ * handle, and a handle says nothing, so the paths have to be remembered from
+ * the CreateFile that produced them.
+ *
+ * Off unless --trace-files, because it intercepts every file operation the game
+ * performs and a UE3 startup performs a great many.
+ */
+int g_trace_files = 0;
+
+#define FT_MAX 8192
+static struct { uint64_t h; wchar_t path[260]; int is_text; } g_ft[FT_MAX];
+static long g_ftn;
+
+static void ft_record(uint64_t h, const wchar_t *path)
+{
+    if (h == (uint64_t)(intptr_t)INVALID_HANDLE_VALUE || !path) return;
+    long i = InterlockedIncrement(&g_ftn) - 1;
+    if (i >= FT_MAX) {
+        /* Silently forgetting handles makes the trace lie by omission - the
+         * reads on a package simply stop appearing, which reads as "it never
+         * read it". Say so once. */
+        if (i == FT_MAX)
+            fprintf(stderr, "[file] handle table full at %d; later opens are "
+                            "not tracked\n", FT_MAX);
+        return;
+    }
+    g_ft[i].h = h;
+    wcsncpy(g_ft[i].path, path, 259);
+    const wchar_t *dot = wcsrchr(path, L'.');
+    g_ft[i].is_text = dot && (!_wcsicmp(dot, L".log") || !_wcsicmp(dot, L".txt"));
+}
+
+/* Searched BACKWARDS, newest first, and that is not a detail.
+ *
+ * Windows recycles handle VALUES: close a file and the next open can hand back
+ * the same number for something else. Scanning forwards returns the oldest
+ * file that ever held the handle, so a read gets attributed to a package that
+ * was closed long ago. That produced a very convincing false result here - a
+ * read on "Core.upk" whose first bytes were FF FE 5B 00, a UTF-16 BOM and a
+ * '[', which is an INI file. The package was innocent; the tracer was wrong.
+ */
+static long ft_find(uint64_t h)
+{
+    long n = g_ftn < FT_MAX ? g_ftn : FT_MAX;
+    for (long i = n - 1; i >= 0; i--)
+        if (g_ft[i].h == h) return i;
+    return -1;
+}
+
+static int ft_is_pkg(uint64_t h, const wchar_t **path)
+{
+    long i = ft_find(h);
+    if (i < 0) return 0;
+    if (path) *path = g_ft[i].path;
+    const wchar_t *d = wcsrchr(g_ft[i].path, L'.');
+    return d && !_wcsicmp(d, L".upk");
+}
+
+static int ft_is_text(uint64_t h, const wchar_t **path)
+{
+    long i = ft_find(h);
+    if (i < 0) return 0;
+    if (path) *path = g_ft[i].path;
+    return g_ft[i].is_text;
+}
+
 /* ---- the native side ---- */
 
 int es3_native_call(CPU *c, uint64_t target)
@@ -127,6 +223,15 @@ int es3_native_call(CPU *c, uint64_t target)
      * is forwarded untouched - a guest that really does raise something is
      * still a guest whose behaviour we want.
      */
+    if (target == g_addr_GetCommandLineW) {
+        c->rax = (uint64_t)(uintptr_t)g_guest_cmdline;
+        return 1;
+    }
+    if (target == g_addr_GetCommandLineA) {
+        c->rax = (uint64_t)(uintptr_t)g_guest_cmdline_a;
+        return 1;
+    }
+
     if (target == g_addr_RaiseException) {
         if ((uint32_t)c->rcx == 0x406D1388u) {
             c->rax = 0;
@@ -228,7 +333,66 @@ int es3_native_call(CPU *c, uint64_t target)
     f.stack  = c->rsp + 32;
     f.nstack = HLE_STACK_ARGS;
 
+    /* WriteFile to a text file: echo it. This is how UE3's own log reaches the
+     * console, and its last lines before appError are the actual diagnosis.
+     * Done BEFORE the call, because the buffer is the guest's and the call may
+     * be what fails. */
+    if (g_trace_files && target == g_addr_WriteFile) {
+        const wchar_t *p = NULL;
+        if (ft_is_text(c->rcx, &p) && c->rdx && c->r8 && c->r8 < (1u << 20)) {
+            fprintf(stderr, "[guest-log] %.*s",
+                    (int)c->r8, (const char *)(uintptr_t)c->rdx);
+        }
+    }
+
     hle_invoke(&f);
+
+    /* ReadFile on a package: log where it read and what came back.
+     *
+     * This is the question that separates a recompiler bug from a data or
+     * configuration problem, and nothing else answers it. If the bytes the
+     * kernel returns are the right ones and the guest still rejects them, the
+     * corruption happened in lifted code; if the offset is wrong, it is the
+     * seek. Either way it is one line of evidence instead of a theory. */
+    if (g_trace_files && target == g_addr_ReadFile) {
+        const wchar_t *p = NULL;
+        static long nread;
+        long k = InterlockedIncrement(&nread);
+        if (k <= 40) {
+            long idx = ft_find(f.rcx);
+            const unsigned char *b = (const unsigned char *)(uintptr_t)f.rdx;
+            fprintf(stderr, "[readany] h=%#llx %ls want=%lu first=%02X %02X %02X %02X\n",
+                    (unsigned long long)f.rcx,
+                    idx >= 0 ? g_ft[idx].path : L"(untracked handle)",
+                    (unsigned long)f.r8, b[0], b[1], b[2], b[3]);
+        }
+        if (ft_is_pkg(f.rcx, &p)) {
+            LARGE_INTEGER pos = {0}, zero = {0};
+            SetFilePointerEx((HANDLE)(uintptr_t)f.rcx, zero, &pos, FILE_CURRENT);
+            const unsigned char *b = (const unsigned char *)(uintptr_t)f.rdx;
+            fprintf(stderr, "[read] %ls want=%lu -> pos now %lld, first bytes"
+                            " %02X %02X %02X %02X\n",
+                    p, (unsigned long)f.r8, (long long)pos.QuadPart,
+                    b[0], b[1], b[2], b[3]);
+        }
+    }
+
+    /* CreateFile* returns the handle the later WriteFile will name. */
+    if (g_trace_files &&
+        (target == g_addr_CreateFileW || target == g_addr_CreateFileA)) {
+        wchar_t wbuf[260];
+        const wchar_t *path;
+        if (target == g_addr_CreateFileA) {
+            MultiByteToWideChar(CP_ACP, 0, (const char *)(uintptr_t)f.rcx, -1,
+                                wbuf, 260);
+            path = wbuf;
+        } else {
+            path = (const wchar_t *)(uintptr_t)f.rcx;
+        }
+        int ok = f.rax_out != (uint64_t)(intptr_t)INVALID_HANDLE_VALUE;
+        fprintf(stderr, "[file] %s %ls\n", ok ? "open " : "FAIL ", path);
+        if (ok) ft_record(f.rax_out, path);
+    }
 
     /* Win64 returns integers in RAX and floats in XMM0. Which one the callee
      * used is not knowable here either, so both are taken; the guest reads the

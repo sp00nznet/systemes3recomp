@@ -32,9 +32,13 @@ static void usage(const char *argv0)
 int main(int argc, char **argv)
 {
     const char *exe = NULL;
+    const char *game_args = "";
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--trace")) g_trace_enabled = 1;
         else if (!strcmp(argv[i], "--swallow-raise")) g_swallow_raise = 1;
+        else if (!strcmp(argv[i], "--trace-files")) g_trace_files = 1;
+        else if (!strcmp(argv[i], "--game-args") && i + 1 < argc)
+            game_args = argv[++i];
         else if (!strcmp(argv[i], "--limit") && i + 1 < argc)
             g_dispatch_limit = strtoull(argv[++i], NULL, 0);
         else if (argv[i][0] != '-') exe = argv[i];
@@ -49,6 +53,8 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     es3_install_crash_handler();
+
+    es3_set_guest_cmdline(exe, game_args);
 
     if (!es3_load_image(exe)) return 1;
 
