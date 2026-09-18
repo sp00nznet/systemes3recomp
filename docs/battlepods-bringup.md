@@ -212,6 +212,8 @@ All off by default. `--trace` also enables the lifted call stack.
                              and where it lands
     --find-string TEXT       scan committed guest memory for TEXT
     --capture N              write frame N out as es3_frame_N.png
+    --log-imports            one line the first time each import is
+                             really called - 227 of 609 here
 
 A fault reports the guest PC, because the lifter maintains `c->rip` per basic
 block and at every call return point. Without the return points a fault in a
