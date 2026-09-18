@@ -1186,13 +1186,20 @@ void es3_rs_dump(void)
  *   +0x2E8   1  byte, compared - a status or present flag
  *
  * And the init builds TWO tables, which is the gap in what is primed here.
- * sub_140002360 - the library's init, reached from one call site at
- * 0x140E94874 - allocates 4 records of 0x2EC at 0x141F2E770, and then a SECOND
+ * sub_140002360 allocates 4 records of 0x2EC at 0x141F2E770, then a SECOND
  * array of 0x48-byte records at 0x141F2E780 with its count at 0x141F2E778,
  * and finally zeroes a 16-entry word array at 0x141F2E788. Publishing only the
  * first leaves the second null, so the thing to do is run the real init and
  * then correct only the globals that say "no board" - not to keep hand-
  * building its outputs one table at a time.
+ *
+ * Two things to know before doing that. It takes ONE argument in rcx: rcx is
+ * read before it is written, and the wrapper at 0x140E94870 that calls it is a
+ * bare `sub rsp,0x28; call` which forwards whatever it was given. And nothing
+ * in the image CALLS that wrapper - it is reached through a function pointer -
+ * so the argument cannot be read off a call site and has to come from
+ * instrumenting the wrapper at run time. Which needs a display, because with
+ * no adapter UE3 aborts long before any of this runs. */
  *
  * Until that is settled the default build keeps the behaviour that is known to
  * work: rendering at 43 fps with 03-01 on screen. */
