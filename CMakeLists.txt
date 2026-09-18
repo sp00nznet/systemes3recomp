@@ -25,6 +25,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(ES3_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime" CACHE INTERNAL "")
 set(ES3_CPU_DIR     "${CMAKE_CURRENT_SOURCE_DIR}/pcrecomp/runtime/recomp32_cpu" CACHE INTERNAL "")
 set(ES3_HYBRID_DIR  "${CMAKE_CURRENT_SOURCE_DIR}/pcrecomp/runtime/hybrid" CACHE INTERNAL "")
+set(ES3_RUNTIME64_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime64" CACHE INTERNAL "")
+set(ES3_CPU64_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/pcrecomp/runtime/recomp64_cpu" CACHE INTERNAL "")
 
 if(NOT EXISTS "${ES3_CPU_DIR}/cpu.h")
     message(FATAL_ERROR
@@ -138,6 +140,57 @@ function(es3_runtime target generated_dir)
     # suspect first.
     set_property(TARGET ${target} APPEND_STRING PROPERTY
                  LINK_FLAGS " /BASE:0x20000000 /LARGEADDRESSAWARE")
+endfunction()
+
+# ---- 64-bit targets ----
+#
+# es3_runtime() above refuses a 64-bit build, and is right to: a 32-bit ES3
+# title is linked at 0x00400000 and its guest pointers only exist as addresses
+# in a 32-bit process. A Win64 title inverts every one of those constraints -
+# it loads at its own preferred base, its calling convention IS the host's, and
+# a guest pointer is a host pointer - so it needs the opposite host and a
+# separate runtime rather than an #ifdef through the middle of this one.
+#
+#   add_executable(mygame ${GENERATED})
+#   es3_runtime64(mygame games/mygame/generated)
+#   cmake -B build -A x64
+function(es3_runtime64 target generated_dir)
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR
+            "${target} is being built 32-bit. A Win64 ES3 title maps at "
+            "0x140000000 and its guest pointers are host pointers: "
+            "cmake -B build -A x64")
+    endif()
+    if(NOT MSVC)
+        message(FATAL_ERROR "${target} needs MSVC: the guest<->host thunk is "
+                            "ml64 assembly and the imports are forwarded to "
+                            "the host's own DLLs.")
+    endif()
+    enable_language(ASM_MASM)
+    target_sources(${target} PRIVATE
+        "${ES3_RUNTIME64_DIR}/loader64.c"
+        "${ES3_RUNTIME64_DIR}/dispatch64.c"
+        "${ES3_RUNTIME64_DIR}/trace64.c"
+        "${ES3_RUNTIME64_DIR}/main64.c"
+        "${ES3_RUNTIME64_DIR}/thunk64.asm"
+        "${ES3_CPU64_DIR}/eh64.c"
+    )
+    target_include_directories(${target} PRIVATE
+        "${ES3_RUNTIME64_DIR}"
+        "${ES3_CPU64_DIR}"
+        "${generated_dir}"
+    )
+    # /FI and not /D. MSVC accepts a function-like macro on the command line,
+    # ignores it, and leaves the abort() default in RECOMP_TODO - so an
+    # unexpressed instruction ends the process with no output at all, which
+    # reads as a crash somewhere else entirely.
+    target_compile_options(${target} PRIVATE
+        /FI"${ES3_RUNTIME64_DIR}/es3_todo.h"
+        /W1 /wd4244 /wd4267 /wd4018 /wd4102 /wd4101 /wd4146 /wd4996)
+    # No /BASE, no /DYNAMICBASE:NO, no /LARGEADDRESSAWARE, and no /STACK.
+    # The guest asks for 0x140000000, the host for its own default, and on
+    # 64-bit those do not collide the way two 32-bit images at 0x00400000 do.
+    # The guest's threads get their stacks from the runtime, not the linker.
 endfunction()
 
 # Self-check: builds the runtime against stub generated headers and exercises
