@@ -340,6 +340,19 @@ void es3_log_call(CPU *c, uint64_t pref)
                             rd32(c->rcx + 0x78), rd32(c->rcx + 0x7c));
                 } __except (EXCEPTION_EXECUTE_HANDLER) { }
             }
+            /* RCX as a wide string when it plausibly is one. UE3 passes
+             * package and object names as TCHAR*, and a logged pointer says
+             * nothing while the name it points at usually says everything. */
+            if (c->rcx > 0x10000) {
+                __try {
+                    const wchar_t *w = (const wchar_t *)(uintptr_t)c->rcx;
+                    int ok = 1, n = 0;
+                    for (; n < 80 && w[n]; n++)
+                        if (w[n] < 32 || w[n] > 0x7E) { ok = 0; break; }
+                    if (ok && n >= 2)
+                        fprintf(stderr, "       rcx -> L\"%.80ls\"\n", w);
+                } __except (EXCEPTION_EXECUTE_HANDLER) { }
+            }
             if (g_trace_enabled) es3_trace_tail(24);
             return;
         }
@@ -928,6 +941,21 @@ void dispatch(CPU *c, uint64_t target)
     if (fn) {
         CPU *prev_cpu = g_cur_cpu;
         g_cur_cpu = c;
+        /* A logged call's RETURN value. LoadPackage returning NULL is the
+         * difference between "the package loaded and the object is missing"
+         * and "the package never loaded at all", and entry logging alone
+         * cannot tell those apart. */
+        if (g_n_log_calls) {
+            for (int q = 0; q < g_n_log_calls; q++)
+                if (g_log_calls[q] == pref) {
+                    es3_log_call(c, pref);
+                    fn(c);
+                    fprintf(stderr, "       -> returned %#llx\n",
+                            (unsigned long long)c->rax);
+                    g_cur_cpu = prev_cpu;
+                    return;
+                }
+        }
         if (g_trace_enabled) {
             es3_trace(pref, "call");
             if (cs_depth < CS_MAX) cs_stack[cs_depth] = pref;
