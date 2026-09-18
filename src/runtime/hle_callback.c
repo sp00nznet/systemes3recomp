@@ -1317,6 +1317,23 @@ static void ioboard_claim(uint32_t hub, uint32_t port, uint32_t buf,
     wr8(buf + 5u, 1);                         /* bDescriptorType = DEVICE */
     wr16(buf + IOB_VENDOR, (uint16_t)ES3_IOB_VID);
     wr16(buf + IOB_PRODUCT, (uint16_t)ES3_IOB_PID);
+    /*
+     * And the string indices, which is where the cabinet's ID comes from.
+     *
+     * The device descriptor the game reads is the one inside this struct -
+     * it never asks for a device descriptor separately - so leaving
+     * iSerialNumber at the zero Windows put there means a board with no
+     * serial, and the game writes a blank cabinet ID over whatever was in
+     * +0x498 and then raises mode 0x52 comparing it with what it remembers.
+     * Naming the strings here is what makes it ask for string 3.
+     */
+    wr8(buf + 4u + 14u, 1);                   /* iManufacturer */
+    wr8(buf + 4u + 15u, 2);                   /* iProduct */
+    wr8(buf + 4u + 16u, 3);                   /* iSerialNumber */
+    wr8(buf + 4u + 17u, 1);                   /* bNumConfigurations */
+    wr16(buf + 4u + 2u, 0x0200);              /* bcdUSB 2.00 */
+    wr8(buf + 4u + 4u, 0xFF);                 /* vendor class */
+    wr8(buf + 4u + 7u, 64);                   /* bMaxPacketSize0 */
     wr8(buf + IOB_CONFIG, 1);
     wr8(buf + IOB_SPEED, 1);                  /* full speed */
     wr8(buf + IOB_IS_HUB, 0);                 /* not a hub: do not recurse */
