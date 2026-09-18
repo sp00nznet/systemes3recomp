@@ -1150,16 +1150,22 @@ void es3_rs_dump(void)
 #define IO_IDENT_VA    0x1412AD958ull   /* "namco ltd.;NA-JV;Ver4.00;..." */
 #define IO_IDENT_LEN   0x2a
 
-/* OFF by default: necessary, and not yet sufficient.
+/* OFF by default, and UNTESTED - not known-broken.
  *
- * The record layout is known now, by tracking the register the node accessor
+ * Two notes here previously said this path faulted. Neither survives: the
+ * priming below has never actually run in any recorded run (it prints on its
+ * first call and that line has never appeared), so the crashes attributed to
+ * it happened upstream of it, and the same crash occurs with --io-board off.
+ * What this machine really has is a display device that comes and goes, and
+ * every "A differs from B" conclusion drawn across that has been wrong.
+ *
+ * The record layout IS known, by tracking the register the node accessor
  * returns through the poll function at 0x1409E0700 and recording every offset
  * it is used at. Every field is a scalar - there is no pointer anywhere in the
  * 0x2EC bytes - so a zero-filled record carrying the right identity is
- * structurally fine, and the fault that happens with --io-board on is NOT the
- * record. (An earlier note here said it was; that came from a tracker that let
- * taint cross a call, which made a C++ `this` and its vtable call look like
- * part of the node.)
+ * structurally sound. (An earlier note said the record held a pointer; that
+ * came from a tracker that let taint cross a call, so a C++ "this" and its
+ * vtable call were being read as node fields.)
  *
  *   +0x000  42  board identity, memcmp'd against .rdata
  *   +0x109   1  byte field
@@ -1179,10 +1185,14 @@ void es3_rs_dump(void)
  *   +0x2CA   2  /
  *   +0x2E8   1  byte, compared - a status or present flag
  *
- * So the next suspect is not this table but what ELSE the library's own init
- * would have built: priming its globals skips sub_140002380, and whatever it
- * constructs besides the node table is still absent. Running the real init and
- * then correcting only the globals that say "no board" is the thing to try.
+ * And the init builds TWO tables, which is the gap in what is primed here.
+ * sub_140002360 - the library's init, reached from one call site at
+ * 0x140E94874 - allocates 4 records of 0x2EC at 0x141F2E770, and then a SECOND
+ * array of 0x48-byte records at 0x141F2E780 with its count at 0x141F2E778,
+ * and finally zeroes a 16-entry word array at 0x141F2E788. Publishing only the
+ * first leaves the second null, so the thing to do is run the real init and
+ * then correct only the globals that say "no board" - not to keep hand-
+ * building its outputs one table at a time.
  *
  * Until that is settled the default build keeps the behaviour that is known to
  * work: rendering at 43 fps with 03-01 on screen. */
