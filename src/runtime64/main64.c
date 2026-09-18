@@ -44,6 +44,8 @@ int main(int argc, char **argv)
             g_watch_reader = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--watch-alloc") && i + 1 < argc)
             g_watch_alloc = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--capture") && i + 1 < argc)
+            g_capture_frame = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--eh-trace"))
             g_eh_trace = 1;
         else if (!strcmp(argv[i], "--find-string") && i + 1 < argc)

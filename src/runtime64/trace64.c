@@ -111,6 +111,132 @@ void es3_trace_tail(int n)
     }
 }
 
+/* ---- did it actually draw anything? ----
+ *
+ * On a machine with no display device - every session here is remote - a
+ * window is black whether the game is rendering into it or not, so looking at
+ * it proves nothing either way. The only honest answer comes from counting the
+ * calls.
+ *
+ * IDirect3D9 and IDirect3DDevice9 are plain COM: a pointer to a vtable of
+ * function pointers. Swapping two of those entries for functions that count
+ * and then forward is enough, and it needs no d3d9.h and no knowledge of what
+ * the guest does with the device. The indices are from the interface
+ * declarations and are fixed by ABI.
+ */
+#define D3D9_CREATEDEVICE 16
+#define D3D9_DEV_PRESENT  17
+
+typedef long (__stdcall *pfn_createdevice)(void *, unsigned, int, void *,
+                                           unsigned long, void *, void **);
+typedef long (__stdcall *pfn_present)(void *, const void *, const void *,
+                                      void *, const void *);
+
+static pfn_createdevice orig_createdevice;
+static pfn_present      orig_present;
+unsigned long long      g_present_count;
+
+static int patch_slot(void *iface, int index, void *repl, void **orig)
+{
+    void **vt = *(void ***)iface;
+    DWORD old;
+    if (*orig) return 1;                     /* the vtable is shared */
+    if (!VirtualProtect(&vt[index], sizeof(void *), PAGE_READWRITE, &old))
+        return 0;
+    *orig = vt[index];
+    vt[index] = repl;
+    VirtualProtect(&vt[index], sizeof(void *), old, &old);
+    return 1;
+}
+
+/* --capture N: write frame N out as a PNG.
+ *
+ * The one thing a frame counter cannot tell you is WHAT was drawn, and on a
+ * session with no display there is no other way to look. d3dx9_43 is already
+ * loaded - the guest imports it - so the save costs a GetProcAddress and the
+ * back buffer, and nothing has to be reimplemented. */
+#define D3D9_DEV_GETBACKBUFFER 18
+
+typedef long (__stdcall *pfn_getbackbuffer)(void *, unsigned, unsigned, int,
+                                            void **);
+typedef long (__stdcall *pfn_savesurface)(const char *, int, void *,
+                                          const void *, const void *);
+typedef unsigned long (__stdcall *pfn_release)(void *);
+
+unsigned long long g_capture_frame;
+
+static void capture_backbuffer(void *dev, unsigned long long n)
+{
+    void **vt = *(void ***)dev;
+    void *surf = NULL;
+    char path[64];
+    HMODULE d3dx;
+    pfn_savesurface save;
+    long hr;
+
+    d3dx = GetModuleHandleA("d3dx9_43.dll");
+    save = d3dx ? (pfn_savesurface)(void *)
+                  GetProcAddress(d3dx, "D3DXSaveSurfaceToFileA") : NULL;
+    if (!save) {
+        fprintf(stderr, "[d3d9] capture: no D3DXSaveSurfaceToFileA\n");
+        return;
+    }
+    hr = ((pfn_getbackbuffer)vt[D3D9_DEV_GETBACKBUFFER])(dev, 0, 0, 0, &surf);
+    if (hr < 0 || !surf) {
+        fprintf(stderr, "[d3d9] capture: GetBackBuffer -> %#lx\n",
+                (unsigned long)hr);
+        return;
+    }
+    snprintf(path, sizeof path, "es3_frame_%llu.png", n);
+    hr = save(path, 3 /* D3DXIFF_PNG */, surf, NULL, NULL);
+    ((pfn_release)(*(void ***)surf)[2])(surf);
+    fprintf(stderr, "[d3d9] captured frame %llu to %s (%#lx)\n",
+            n, path, (unsigned long)hr);
+}
+
+static long __stdcall hook_present(void *dev, const void *a, const void *b,
+                                   void *c, const void *d)
+{
+    long hr;
+    /* Before the flip: afterwards the back buffer is whatever the driver
+     * handed back, which on some drivers is the frame before last and on
+     * others is undefined. */
+    if (g_capture_frame && g_present_count + 1 == g_capture_frame)
+        capture_backbuffer(dev, g_capture_frame);
+    hr = orig_present(dev, a, b, c, d);
+    /* Logged on a curve, not every frame: the point is that the number keeps
+     * going up, and one line per frame buries everything else. */
+    g_present_count++;
+    if (g_present_count <= 4 || g_present_count == 30 ||
+        g_present_count % 300 == 0)
+        fprintf(stderr, "[d3d9] Present #%llu -> %#lx\n",
+                g_present_count, (unsigned long)hr);
+    return hr;
+}
+
+static long __stdcall hook_createdevice(void *d3d, unsigned adapter, int type,
+                                        void *focus, unsigned long flags,
+                                        void *pp, void **out)
+{
+    long hr = orig_createdevice(d3d, adapter, type, focus, flags, pp, out);
+    fprintf(stderr, "[d3d9] CreateDevice(adapter=%u type=%d hwnd=%p flags=%#lx)"
+                    " -> %#lx  device=%p\n",
+            adapter, type, focus, (unsigned long)flags, (unsigned long)hr,
+            (out && hr >= 0) ? *out : NULL);
+    if (hr >= 0 && out && *out)
+        patch_slot(*out, D3D9_DEV_PRESENT, (void *)hook_present,
+                   (void **)&orig_present);
+    return hr;
+}
+
+void es3_d3d9_watch(void *d3d9)
+{
+    if (!d3d9) return;
+    if (patch_slot(d3d9, D3D9_CREATEDEVICE, (void *)hook_createdevice,
+                   (void **)&orig_createdevice))
+        fprintf(stderr, "[d3d9] watching CreateDevice/Present\n");
+}
+
 /* --find-string: is this text anywhere in guest memory?
  *
  * Settles "did the package actually decompress" without reverse-engineering

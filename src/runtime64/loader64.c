@@ -34,6 +34,8 @@ static int g_nimports;
  * at load time so the check in es3_native_call is a pointer compare. */
 uint64_t g_addr_RaiseException;
 uint64_t g_addr_CxxThrowException;
+uint64_t g_addr_hasp_login, g_addr_hasp_logout;
+uint64_t g_addr_hasp_read, g_addr_hasp_decrypt;
 uint64_t g_addr_initterm;
 uint64_t g_addr_initterm_e;
 uint64_t g_addr_CreateThread;
@@ -255,6 +257,15 @@ int es3_load_image(const char *path)
                 for (size_t q = 0; q < sizeof k_intercepts / sizeof k_intercepts[0]; q++)
                     if (!strcmp(nm, k_intercepts[q].name))
                         *k_intercepts[q].slot = (uint64_t)fp;
+                /* The Sentinel dongle, imported by ORDINAL, so the table above
+                 * cannot name it: an ordinal import has no name to match on and
+                 * "#13" means something different in every DLL. */
+                if (strstr(dll, "hasp")) {
+                    if (!strcmp(nm, "#13"))      g_addr_hasp_login = (uint64_t)fp;
+                    else if (!strcmp(nm, "#14")) g_addr_hasp_logout = (uint64_t)fp;
+                    else if (!strcmp(nm, "#15")) g_addr_hasp_read = (uint64_t)fp;
+                    else if (!strcmp(nm, "#2"))  g_addr_hasp_decrypt = (uint64_t)fp;
+                }
             }
         }
     }

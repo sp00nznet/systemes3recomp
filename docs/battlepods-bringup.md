@@ -112,53 +112,76 @@ preference to `Base`/`Default`. They are regenerated on the next run.
 
 ## Where it gets to
 
-Sixteen packages load — Core, Engine, GameFramework, GFxUI, IpDrv,
-OnlineSubsystemPC, WinDrv, Startup, Startup_LOC_INT, SWArcGame,
-SWArcGame_LOC_INT, SWArcFonts, AkAudio, GuidCache, RefShaderCache and
-**SWArc_SplashScreen**. `Direct3DCreate9` succeeds and returns a live
-interface, 28 guest threads run, and `Startup.upk` is read in full — 1,437
-reads reaching exactly its 90,877,289 bytes.
+It boots. The engine initialises, creates a real D3D9 HAL device, loads a map
+and runs: `SWArc_Attract01` renders at a sustained ~43 fps, streaming textures
+out of `Textures.tfc` and its Wwise banks for BGM and dialogue, for as long as
+it is left alone.
 
-It then stops on a content reference:
+What it draws is the machine's own error screen:
 
-    Failed to find object 'DistributionFloat PlayerCustomisation.AngularAccelCurve'
+    03-01 I/O PCB ERROR
 
-29 frames deep inside `UObject` serialisation. `PlayerCustomisation` is listed
-in `[Engine.StartupPackages]` in `DefaultEngine.ini`.
+on the arcade's curved-screen projection, with FREE PLAY in the corner. That is
+the game working, and saying that the cabinet it expects is not here.
 
-All 18 packages named in `[Engine.StartupPackages]` - including the stock
-`EngineMaterials`, `EngineSounds` and `EngineFonts` - are absent as files and
-merged into `Startup.upk`, which is what seek-free console cooking does. The
-dump is complete: `PlayerCustomisation` is not in `PCConsoleTOC.txt` (so no
-file is expected) but is named in `GuidCache.upk` (so it is a known cooked
-package).
+Left to itself - no map on the command line - it boots `SWArc_SplashScreen`
+and then `SWArc_TestMode`, which is what an arcade board does when its I/O is
+absent. Naming the map on the guest command line goes straight to attract:
 
-`Startup.upk` is read in full and correctly - 1,437 reads reaching exactly its
-90,877,289 bytes, first four bytes `C1 83 2A 9E`. Its flags say
-StoreCompressed but not StoreFullyCompressed, which matches
-`bFullyCompressStartupPackages=FALSE` in the config.
+    battlepods.exe SWArcGame-Win64-Shipping.exe         --game-args "SWArc_Attract01 -seekfreeloadingpcconsole"
 
-The engine probes the filesystem for a bare `PlayerCustomisation` and fails,
-and it probes for NONE of the other startup packages - so they were never
-requested rather than successfully loaded. That points at the startup packages
-not being registered out of the blob at all, with `PlayerCustomisation` simply
-being the first one anything references. Which mechanism does that
-registration, and why it is not running, is the open question - and it is a UE3
-content-loading question rather than a recompilation one.
+### What is left
 
-Ruled out, so they are not retried:
+The I/O PCB. The game enumerates it with setupapi/CM_* and talks to it over
+USB; nothing in this runtime answers, so `SWArcWinViewport` reports 03-01 and
+holds the attract sequence behind the error. That is the last thing between
+here and attract actually playing, and it is arcade hardware emulation rather
+than recompilation.
 
-* **PCConsoleTOC.txt is not a runtime input.** The binary contains no "TOC",
-  "ConsoleTOC" or "TableOfContents" string at all and never opens the file; it
-  is a cook artifact. It is still useful offline for checking dump
-  completeness, which is how the dump was confirmed complete.
-* **There is no engine log to recover.** The shipping build has logging
-  compiled out: nothing is written to a file, and nothing goes to the
-  OutputDebugString channel either (`--guest-log` reads that channel and
-  produces nothing).
-* **The package loader's return value means nothing.** 0x140085720 is the
-  async preload entry point, not LoadPackage; it returns void, and reports 0
-  for Core and Engine, which plainly do load.
+### The dongle, which is done
+
+System ES3 carries a Sentinel USB HASP key, and without it the same screen also
+showed `19-21 USB DONGLE ERROR 1`. The game imports four functions from
+`hasp_windows_x64_100610.dll` **by ordinal** - `hasp_login` (13),
+`hasp_logout` (14), `hasp_read` (15), `hasp_decrypt` (2) - so the runtime's
+name-matched intercept table cannot see them; they are bound by ordinal against
+the DLL name instead.
+
+The check reads one 0x40-byte licence record (file `0xfff0`, offset `0xd00`),
+decrypts it in place, and tests exactly two things:
+
+* `~record[0x3E] == record[0x3F]`, a complement pair; get this wrong and the
+  screen says `19-23 USB DONGLE ERROR 3`;
+* `record[0..4]` against the title id, which the caller has just assembled in
+  its own frame at `+0x34`.
+
+So the id does not have to be known or hard-coded: the intercept reads it back
+out of the caller's frame, which `es3_native_call` leaves addressable because
+it consumes the return address before the interceptions run. For this dump it
+is `27432`.
+
+### Things that were believed and are not true
+
+Recorded because each one cost a day and each one was convincing.
+
+* **"The startup packages are never registered."** The engine stopped on
+  `Failed to find object 'DistributionFloat PlayerCustomisation.AngularAccelCurve'`
+  and `PlayerCustomisation` was never requested from disk, which read as a
+  package-loading gap. It was not. `--find-string AngularAccelCurve` found the
+  name in guest memory 56 times: `Startup.upk` had decompressed correctly all
+  along. The object genuinely is absent - it lives in the gameplay maps, not in
+  `Startup.upk` - and the engine is *supposed* to fail that lookup and carry
+  on. What it could not do was carry on, because the throw had nowhere to land.
+* **"LZO decompression is mislifting."** `Startup.upk` is LZO, not zlib, and
+  the guest decompresses it in lifted code, which made a lifter bug the obvious
+  suspect. Inflating the package independently with python-lzo and comparing
+  ruled it out: all 155,615,758 bytes are right.
+* **"The frames are the UnrealScript VM, so this is config."** Two of the
+  frames referenced `.ini` and `GetConfigName`, which said `LoadConfig`. That
+  attribution came from disassembling a fixed number of bytes per frame and
+  running off the end of the function into its neighbour. With the extents from
+  `.pdata` the same frames say `"Attempt to assign variable through None"` and
+  `"Accessed None '%s'"` - the script interpreter.
 
 ## Diagnostics
 
@@ -174,6 +197,10 @@ All off by default. `--trace` also enables the lifted call stack.
     --log-call VA[,...]      report a function whenever it runs, with args
     --log-callees-of VA      every function a named function calls, resolved
     --swallow-raise          DIAGNOSTIC ONLY — drop guest RaiseException
+    --eh-trace               every guest throw, the frames it walks,
+                             and where it lands
+    --find-string TEXT       scan committed guest memory for TEXT
+    --capture N              write frame N out as es3_frame_N.png
 
 A fault reports the guest PC, because the lifter maintains `c->rip` per basic
 block and at every call return point. Without the return points a fault in a

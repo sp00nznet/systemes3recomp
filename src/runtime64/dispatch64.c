@@ -446,6 +446,64 @@ int es3_native_call(CPU *c, uint64_t target)
     if (target == g_addr_CxxThrowException)
         es3_eh_throw(c, rd64(gsp), c->rcx, c->rdx);
 
+    /* ---- the Sentinel dongle ----
+     *
+     * System ES3 carries a USB HASP key, and its absence is the "19-21 USB
+     * DONGLE ERROR 1" the game draws over the attract screen. The library is
+     * present in the dump and loads; it is the KEY that is not here, so every
+     * call returns HASP_HASP_NOT_FOUND and the game stops at the error.
+     *
+     * Answering HASP_STATUS_OK is the same kind of substitution as the rest of
+     * this file: the machine this is running on does not have the hardware, so
+     * the runtime is the hardware. hasp_read returns zeroes and hasp_decrypt
+     * leaves the buffer alone, which is enough if the game only checks status
+     * - and if it does not, the next screen will say so. */
+    if (g_addr_hasp_login && target == g_addr_hasp_login) {
+        if (c->r8) wr32(c->r8, 1);         /* a handle it can pass back */
+        c->rax = 0;
+        return 1;
+    }
+    if (g_addr_hasp_logout && target == g_addr_hasp_logout) {
+        c->rax = 0;
+        return 1;
+    }
+    if (g_addr_hasp_read && target == g_addr_hasp_read) {
+        /* (handle, fileid, offset, length, buffer) - the fifth argument is on
+         * the stack, above the shadow space.
+         *
+         * The block at file 0xfff0 offset 0xd00 is the licence record, and the
+         * caller checks exactly two things in it: that the last two bytes are
+         * a complement pair, and that the first five are the title id. It has
+         * that id in its own frame, assembled just before the call - four
+         * ASCII digits at +0x34 and a fifth at +0x38 - so the answer does not
+         * have to be guessed or hard-coded per title. c->rsp is that frame
+         * base here, the return address having already been consumed.
+         *
+         * This is the same substitution as everything else in this file: the
+         * machine has hardware a PC does not, so the runtime is the hardware.
+         * hasp_decrypt below is a no-op, so what is written here is what the
+         * caller compares. */
+        uint64_t buf = rd64(c->rsp + 0x20);
+        uint64_t len = c->r9;
+        if (buf && len && len < (1u << 20)) {
+            memset((void *)(uintptr_t)buf, 0, (size_t)len);
+            if (len >= 0x40) {
+                for (int q = 0; q < 5; q++)
+                    wr8(buf + q, rd8(c->rsp + 0x34 + q));
+                wr8(buf + 0x3e, 0x5a);
+                wr8(buf + 0x3f, (uint8_t)~0x5a);
+                fprintf(stderr, "[hasp] licence record: id \"%.5s\"\n",
+                        (const char *)(uintptr_t)buf);
+            }
+        }
+        c->rax = 0;
+        return 1;
+    }
+    if (g_addr_hasp_decrypt && target == g_addr_hasp_decrypt) {
+        c->rax = 0;
+        return 1;
+    }
+
     if (target == g_addr_RaiseException) {
         if ((uint32_t)c->rcx == 0x406D1388u) {
             c->rax = 0;
@@ -716,6 +774,7 @@ int es3_native_call(CPU *c, uint64_t target)
         fprintf(stderr, "[d3d9] Direct3DCreate9(%#x) -> %#llx%s\n",
                 (unsigned)f.rcx, (unsigned long long)f.rax_out,
                 f.rax_out ? "" : "   NULL - no D3D9 on this session");
+        es3_d3d9_watch((void *)(uintptr_t)f.rax_out);
     }
 
     /* CreateFile* returns the handle the later WriteFile will name. */

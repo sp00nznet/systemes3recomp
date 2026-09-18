@@ -66,6 +66,9 @@ const char *es3_import_name(uint64_t addr);
 /* Imports the runtime intervenes in; resolved at load time. */
 extern uint64_t g_addr_RaiseException;
 extern uint64_t g_addr_CxxThrowException;
+/* The Sentinel dongle, imported by ordinal - see the note in dispatch64.c. */
+extern uint64_t g_addr_hasp_login, g_addr_hasp_logout;
+extern uint64_t g_addr_hasp_read, g_addr_hasp_decrypt;
 extern uint64_t g_addr_initterm;
 extern uint64_t g_addr_initterm_e;
 extern uint64_t g_addr_CreateThread;
@@ -130,6 +133,12 @@ void es3_log_callee(uint64_t pref);
  * runtime/recomp64_cpu/eh64.c and is declared by cpu64.h. */
 extern uint64_t es3_eh_image_base;
 extern int g_eh_trace;
+
+/* Counts frames, because on a session with no display device a black window
+ * proves nothing. */
+void es3_d3d9_watch(void *d3d9);
+extern unsigned long long g_present_count;
+extern unsigned long long g_capture_frame;
 
 extern const char *g_find_string;
 void es3_find_string(void);
