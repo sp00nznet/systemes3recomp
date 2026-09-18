@@ -150,6 +150,14 @@ static LONG WINAPI es3_seh(EXCEPTION_POINTERS *ep)
      * usable native stack - every frame is L_0001400xxxxx with no symbols - so
      * the shadow stack is the only thing that says which guest function was
      * running and who called it. */
+    if (g_cur_cpu)
+        fprintf(stderr, "[crash] guest PC (block) %#llx  rax=%#llx rcx=%#llx "
+                        "rdx=%#llx rsp=%#llx\n",
+                (unsigned long long)g_cur_cpu->rip,
+                (unsigned long long)g_cur_cpu->rax,
+                (unsigned long long)g_cur_cpu->rcx,
+                (unsigned long long)g_cur_cpu->rdx,
+                (unsigned long long)g_cur_cpu->rsp);
     es3_dump_callstack("at the fault");
     es3_trace_dump(msg);
     return EXCEPTION_EXECUTE_HANDLER;
@@ -219,6 +227,15 @@ static LONG CALLBACK es3_veh(EXCEPTION_POINTERS *ep)
                 }
             }
         }
+        /* The lifted call stack at the THROW, not just at the eventual death.
+         * UE3's appErrorf messages name a symptom ("Failed to find object
+         * 'Class None.'") and never the caller, and the caller is the only
+         * thing that says which config key or which package was expected to
+         * provide it. */
+        if (g_cur_cpu)
+            fprintf(stderr, "[throw] guest PC (block) %#llx\n",
+                    (unsigned long long)g_cur_cpu->rip);
+        es3_dump_callstack("at the throw");
         es3_dump_threads();
         es3_trace_dump("guest C++ throw");
         return EXCEPTION_CONTINUE_SEARCH;

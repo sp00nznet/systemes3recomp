@@ -100,6 +100,10 @@ void es3_trace_tail(int n);
 void es3_dump_threads(void);
 void es3_dump_callstack(const char *why);
 void es3_todo(uint64_t va, const char *text);
+
+/* The CPU running lifted code on this thread; c->rip is the guest PC, kept
+ * per basic block by the lifter. NULL when no lifted code is on the stack. */
+extern __declspec(thread) CPU *g_cur_cpu;
 void es3_install_crash_handler(void);
 
 extern int g_trace_enabled;
@@ -110,6 +114,8 @@ extern uint64_t g_watch_serialize;
 extern uint64_t g_watch_reader;
 extern uint64_t g_watch_alloc;
 extern uint64_t g_addr_scalable_malloc;
+extern uint64_t g_addr_DirectInput8Create;
+extern uint64_t g_addr_Direct3DCreate9;
 extern __declspec(thread) int g_watch_armed;
 void es3_watch_reader(CPU *c, uint64_t pref);
 extern uint64_t g_log_calls[8];

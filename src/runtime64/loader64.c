@@ -45,6 +45,8 @@ uint64_t g_addr_ReadFile;
 uint64_t g_addr_GetFileSize;
 uint64_t g_addr_GetFileSizeEx;
 uint64_t g_addr_scalable_malloc;
+uint64_t g_addr_DirectInput8Create;
+uint64_t g_addr_Direct3DCreate9;
 
 /* Resolved by name as the import table is walked. A table rather than a chain
  * of strcmps so that adding the next one - and there will be a next one, every
@@ -63,6 +65,8 @@ static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     { "GetFileSize",    &g_addr_GetFileSize   },
     { "GetFileSizeEx",  &g_addr_GetFileSizeEx },
     { "scalable_malloc", &g_addr_scalable_malloc },
+    { "DirectInput8Create", &g_addr_DirectInput8Create },
+    { "Direct3DCreate9", &g_addr_Direct3DCreate9 },
 };
 
 const char *es3_import_name(uint64_t addr)

@@ -76,6 +76,14 @@ static void tc_bump(uint64_t pref)
 static __declspec(thread) uint64_t cs_stack[CS_MAX];
 static __declspec(thread) int cs_depth;
 
+/* The CPU whose lifted function is running on this thread right now.
+ *
+ * A fault handler has no other way to reach it: the CPU is a local in
+ * dispatch() or in the thread shim, and the faulting frame is generated C with
+ * no symbols. With this, the handler can read c->rip - which the lifter now
+ * maintains per basic block - and name the guest instruction. */
+__declspec(thread) CPU *g_cur_cpu;
+
 void es3_dump_callstack(const char *why)
 {
     fprintf(stderr, "[stack] %s (depth %d, innermost first)\n", why, cs_depth);
@@ -442,6 +450,34 @@ int es3_native_call(CPU *c, uint64_t target)
         }
     }
 
+    /* ---- DirectInput8Create: the guest's HINSTANCE is not a real module ----
+     *
+     * DirectInput8Create(hinst, version, riid, out, outer) validates hinst
+     * against the modules Windows has actually loaded. The guest's idea of its
+     * own instance handle is the base of the image THIS RUNTIME mapped by hand,
+     * 0x140000000, which the loader has never heard of - so the call fails, and
+     * the game does not check the HRESULT. It dereferences the interface
+     * pointer immediately:
+     *
+     *     call DirectInput8Create        ; leaves the out-parameter NULL
+     *     mov  rcx, [rip+...]            ; reload it
+     *     mov  rax, [rcx]                ; read from address 0
+     *
+     * Substituting the runtime's own module handle is honest here: it is a real
+     * HINSTANCE of a real loaded module in this process, which is all the API
+     * wants it for. The alternative - leaving the guest to fail - is not
+     * emulating the machine, it is emulating a machine with no DirectInput.
+     */
+    if (target == g_addr_DirectInput8Create) {
+        uint64_t guest_hinst = c->rcx;
+        c->rcx = (uint64_t)(uintptr_t)GetModuleHandleW(NULL);
+        if (g_trace_files)
+            fprintf(stderr, "[dinput] DirectInput8Create hinst %#llx -> %#llx "
+                            "(version %#x)\n",
+                    (unsigned long long)guest_hinst,
+                    (unsigned long long)c->rcx, (unsigned)c->rdx);
+    }
+
     /* ---- CreateThread: substitute a native start routine ----
      *
      * Win64 argument order: rcx=attributes, rdx=stack size, r8=start address,
@@ -636,6 +672,20 @@ int es3_native_call(CPU *c, uint64_t target)
              * wraps the buffer the decision has already been made. */
             if (g_trace_enabled) es3_trace_tail(20);
         }
+    }
+
+    /* Direct3DCreate9: whether this machine can render at all.
+     *
+     * Always reported, not only under --trace-files. A NULL here is not a bug
+     * in the recompilation - it is the host saying there is no display device,
+     * which a remote session legitimately is - and every null dereference that
+     * follows is a consequence rather than a separate fault to chase. Worth one
+     * unconditional line to stop that being rediscovered.
+     */
+    if (target == g_addr_Direct3DCreate9) {
+        fprintf(stderr, "[d3d9] Direct3DCreate9(%#x) -> %#llx%s\n",
+                (unsigned)f.rcx, (unsigned long long)f.rax_out,
+                f.rax_out ? "" : "   NULL - no D3D9 on this session");
     }
 
     /* CreateFile* returns the handle the later WriteFile will name. */
@@ -876,6 +926,8 @@ void dispatch(CPU *c, uint64_t target)
     tc_bump(pref);
     void (*fn)(CPU *) = lookup(pref);
     if (fn) {
+        CPU *prev_cpu = g_cur_cpu;
+        g_cur_cpu = c;
         if (g_trace_enabled) {
             es3_trace(pref, "call");
             if (cs_depth < CS_MAX) cs_stack[cs_depth] = pref;
@@ -884,10 +936,12 @@ void dispatch(CPU *c, uint64_t target)
             es3_log_call(c, pref);
             es3_log_callee(pref);
             if (g_watch_serialize && pref == g_watch_serialize) {
-                g_watch_armed = 1; fn(c); g_watch_armed = 0; cs_depth--; return;
+                g_watch_armed = 1; fn(c); g_watch_armed = 0; cs_depth--;
+                g_cur_cpu = prev_cpu; return;
             }
             fn(c);
             cs_depth--;
+            g_cur_cpu = prev_cpu;
             return;
         }
         /* FArchive::Serialize(this, dest, len) - watch what it actually
@@ -911,6 +965,7 @@ void dispatch(CPU *c, uint64_t target)
         es3_watch_reader(c, pref);
         es3_log_call(c, pref);
         fn(c);
+        g_cur_cpu = prev_cpu;
         return;
     }
     /* Inside the image but not a catalogued function: the disassembler missed
