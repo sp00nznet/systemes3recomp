@@ -107,11 +107,17 @@ are adjacent pieces of one contiguous field, and only the hook settled it.
 
 So block 1 is the whole card record:
 
-
+```
+card[16..17]   00 02        the version word 0x0200 that 007AE532 requires
+card[18..23]   "NBGIC" + generation digit
+card[24..31]   the eight byte Blowfish block
+```
 
 A hook on `0x007AE1E0` confirmed the halves and the key, printing
 
-
+```
+blowfish(arg1 -> 8BA0D03C, arg2 -> 62D8F488) context 0094C458 = generation 6
+```
 
 for a card carrying those bytes: **L is the little-endian dword at card[24]**,
 **R the one at card[28]**, and the context is
@@ -119,7 +125,12 @@ for a card carrying those bytes: **L is the little-endian dword at card[24]**,
 
 The plaintext is eight bytes:
 
-
+```
+p[0..3]   the card's identity dword   read back at +0x128
+p[4..5]   a word                      read back at +0x12C
+p[6]      a byte                      read back at +0x12E
+p[7]      p[0] ^ p[1] ^ ... ^ p[6]    checked at 007AE576
+```
 
 ### Minting one
 
