@@ -44,9 +44,13 @@ the `abort()` default in place.
 
     battlepods.exe SWArcGame-Win64-Shipping.exe --game-args "-seekfreeloadingpcconsole"
 
-`-seekfreeloadingpcconsole` is required and is **not** `-seekfreeloading`,
-which this build does not parse. Without it the engine looks for its content
-under `CookedPC` while the dump ships `CookedPCConsole`.
+`-seekfreeloadingpcconsole` is the switch this build parses; `-seekfreeloading`
+is not. It selects `CookedPCConsole` over `CookedPC` for the content path.
+
+Once the junctions below are in place it stops mattering: with them, all three
+of `-seekfreeloadingpcconsole`, `-seekfreeloading` and no switch at all reach
+exactly the same point. Recorded because it was believed to be load-bearing for
+several rounds, and it was only the path resolution underneath it that was.
 
 ## Changes to the game data
 
@@ -120,11 +124,27 @@ It then stops on a content reference:
     Failed to find object 'DistributionFloat PlayerCustomisation.AngularAccelCurve'
 
 29 frames deep inside `UObject` serialisation. `PlayerCustomisation` is listed
-in `[Engine.StartupPackages]` in `DefaultEngine.ini` and, under seek-free
-console cooking, is merged into `Startup.upk` rather than shipped as its own
-file — and `Startup.upk` demonstrably loads. So the remaining question is how
-the startup packages inside it are registered, which is a UE3 content question
-rather than a recompilation one.
+in `[Engine.StartupPackages]` in `DefaultEngine.ini`.
+
+All 18 packages named in `[Engine.StartupPackages]` - including the stock
+`EngineMaterials`, `EngineSounds` and `EngineFonts` - are absent as files and
+merged into `Startup.upk`, which is what seek-free console cooking does. The
+dump is complete: `PlayerCustomisation` is not in `PCConsoleTOC.txt` (so no
+file is expected) but is named in `GuidCache.upk` (so it is a known cooked
+package).
+
+`Startup.upk` is read in full and correctly - 1,437 reads reaching exactly its
+90,877,289 bytes, first four bytes `C1 83 2A 9E`. Its flags say
+StoreCompressed but not StoreFullyCompressed, which matches
+`bFullyCompressStartupPackages=FALSE` in the config.
+
+The engine probes the filesystem for a bare `PlayerCustomisation` and fails,
+and it probes for NONE of the other startup packages - so they were never
+requested rather than successfully loaded. That points at the startup packages
+not being registered out of the blob at all, with `PlayerCustomisation` simply
+being the first one anything references. Which mechanism does that
+registration, and why it is not running, is the open question - and it is a UE3
+content-loading question rather than a recompilation one.
 
 ## Diagnostics
 
