@@ -94,6 +94,7 @@ int main(int argc, char **argv)
     /* Before the guest runs: it opens the cabinet service's shared block
      * during startup and reports the I/O board missing if it is not there. */
     es3_rs_service();
+    es3_start_watchdog();
 
     uint64_t sp = es3_alloc_stack(GUEST_STACK);
     if (!sp) { fprintf(stderr, "[main] no guest stack\n"); return 1; }

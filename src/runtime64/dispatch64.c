@@ -44,9 +44,44 @@ uint64_t g_watch_alloc = 0;   /* --watch-serialize <va> */    /* diagnostic; see
  * its first call has a count in single figures.
  */
 #define TC_MAX 64
-static struct { DWORD tid; volatile long n; uint64_t first; } g_tc[TC_MAX];
+static struct { DWORD tid; volatile long long n; uint64_t first;
+                volatile uint64_t last;
+                /* This thread's shadow stack, published so the stall
+                 * watchdog can read ANOTHER thread's frames. Racy by
+                 * nature and fine for that: a spinning thread's stack
+                 * read a frame late still names the loop. */
+                const uint64_t *cs; volatile int *depth; } g_tc[TC_MAX];
 static volatile long g_tcn;
 static __declspec(thread) int tc_slot = -1;
+
+#define CS_MAX 256
+static __declspec(thread) uint64_t cs_stack[CS_MAX];
+static __declspec(thread) int cs_depth;
+
+/* The last sixteen files the guest opened, kept whether or not --trace-files
+ * is on. See the note at the CreateFile interception. */
+#define FR_N 16
+static wchar_t g_fr[FR_N][160];
+static volatile long g_fr_head;
+
+void es3_note_file(const wchar_t *path)
+{
+    long i;
+    if (!path) return;
+    i = (InterlockedIncrement(&g_fr_head) - 1) & (FR_N - 1);
+    wcsncpy(g_fr[i], path, 159);
+    g_fr[i][159] = 0;
+}
+
+static void fr_dump(void)
+{
+    long head = g_fr_head, k;
+    fprintf(stderr, "[stall] last files opened, oldest first:\n");
+    for (k = FR_N; k > 0; k--) {
+        long i = (head - k) & (FR_N - 1);
+        if (g_fr[i][0]) fprintf(stderr, "   %ls\n", g_fr[i]);
+    }
+}
 
 static void tc_bump(uint64_t pref)
 {
@@ -55,9 +90,14 @@ static void tc_bump(uint64_t pref)
         if (s >= TC_MAX) { tc_slot = TC_MAX - 1; return; }
         g_tc[s].tid = GetCurrentThreadId();
         g_tc[s].first = pref;
+        g_tc[s].cs = cs_stack;
+        g_tc[s].depth = &cs_depth;
         tc_slot = (int)s;
     }
     g_tc[tc_slot].n++;
+    /* One store, and it is the difference between 'a thread is spinning'
+     * and 'a thread is spinning HERE'. */
+    g_tc[tc_slot].last = pref;
 }
 
 /* ---- a call stack for lifted code ----
@@ -72,9 +112,6 @@ static void tc_bump(uint64_t pref)
  * out gives a genuine call stack, per thread, for code that has no symbols and
  * no frame pointers. Gated on --trace because it costs two writes per call.
  */
-#define CS_MAX 256
-static __declspec(thread) uint64_t cs_stack[CS_MAX];
-static __declspec(thread) int cs_depth;
 
 /* The CPU whose lifted function is running on this thread right now.
  *
@@ -103,8 +140,77 @@ void es3_dump_threads(void)
     long n = g_tcn < TC_MAX ? g_tcn : TC_MAX;
     fprintf(stderr, "[threads] %ld guest threads seen\n", n);
     for (long i = 0; i < n; i++)
-        fprintf(stderr, "   tid %-6lu first=%#012llx dispatches=%ld\n",
-                g_tc[i].tid, (unsigned long long)g_tc[i].first, g_tc[i].n);
+        fprintf(stderr, "   tid %-6lu first=%#012llx last=%#012llx dispatches=%lld\n",
+                g_tc[i].tid, (unsigned long long)g_tc[i].first,
+                (unsigned long long)g_tc[i].last, g_tc[i].n);
+}
+
+/* ---- the stall watchdog ----
+ *
+ * The interesting failure here is not a fault. This title renders attract for
+ * a while and then stops presenting while still burning a whole core: no
+ * exception, no message, and from outside indistinguishable from "slow". Some
+ * thread is going round a loop, and the only thing needed to say WHICH loop is
+ * the last address each thread dispatched, sampled twice a second apart - the
+ * thread whose `last` keeps moving is the spinner, the ones whose do not are
+ * blocked behind it.
+ */
+static DWORD WINAPI stall_watchdog(void *unused)
+{
+    unsigned long long seen = 0;
+    int quiet = 0;
+
+    (void)unused;
+    for (;;) {
+        Sleep(5000);
+        if (g_present_count != seen) {
+            seen = g_present_count;
+            quiet = 0;
+            continue;
+        }
+        if (++quiet != 4) continue;          /* 20 s with no frame */
+        fprintf(stderr, "\n[stall] no Present for 20s at frame %llu\n",
+                (unsigned long long)seen);
+        es3_dump_threads();
+        {
+            /* Whichever guest thread moved most in the last second is the one
+             * going round the loop; print ITS frames. The shadow stack is the
+             * only call stack that exists here - the host stack is generated C
+             * with no symbols - and reading another thread's copy while it
+             * runs is racy in a way that does not matter: a frame or two of
+             * skew still names the loop. */
+            long n = g_tcn < TC_MAX ? g_tcn : TC_MAX, i, busiest = 0;
+            long long before[TC_MAX];
+            for (i = 0; i < n; i++) before[i] = g_tc[i].n;
+            Sleep(1000);
+            for (i = 0; i < n; i++)
+                if (g_tc[i].n - before[i] > g_tc[busiest].n - before[busiest])
+                    busiest = i;
+            fprintf(stderr, "[stall] busiest thread %lu: %lld dispatches in that "
+                            "second, stack:\n",
+                    g_tc[busiest].tid, g_tc[busiest].n - before[busiest]);
+            if (g_tc[busiest].cs && g_tc[busiest].depth) {
+                int d = *g_tc[busiest].depth;
+                if (d > CS_MAX) d = CS_MAX;
+                for (i = 0; i < d && i < 24; i++) {
+                    uint64_t va = g_tc[busiest].cs[d - 1 - i];
+                    const char *nm = es3_import_name(va);
+                    fprintf(stderr, "   %#012llx %s\n",
+                            (unsigned long long)va, nm ? nm : "");
+                }
+            }
+        }
+        fr_dump();
+        es3_trace_tail(60);
+        fflush(stderr);
+        quiet = 0;
+    }
+}
+
+void es3_start_watchdog(void)
+{
+    HANDLE t = CreateThread(NULL, 0, stall_watchdog, NULL, 0, NULL);
+    if (t) CloseHandle(t);
 }
 
 static void check_limit(void)
@@ -494,8 +600,12 @@ int es3_native_call(CPU *c, uint64_t target)
                     wr8(buf + q, rd8(c->rsp + 0x34 + q));
                 wr8(buf + 0x3e, 0x5a);
                 wr8(buf + 0x3f, (uint8_t)~0x5a);
-                fprintf(stderr, "[hasp] licence record: id \"%.5s\"\n",
-                        (const char *)(uintptr_t)buf);
+                /* Once. The game re-reads the dongle every frame, and a line
+                 * per frame buries everything else in the log. */
+                static long said;
+                if (InterlockedExchange(&said, 1) == 0)
+                    fprintf(stderr, "[hasp] licence record: id \"%.5s\"\n",
+                            (const char *)(uintptr_t)buf);
             }
         }
         c->rax = 0;
@@ -843,8 +953,7 @@ int es3_native_call(CPU *c, uint64_t target)
     }
 
     /* CreateFile* returns the handle the later WriteFile will name. */
-    if (g_trace_files &&
-        (target == g_addr_CreateFileW || target == g_addr_CreateFileA)) {
+    if (target == g_addr_CreateFileW || target == g_addr_CreateFileA) {
         wchar_t wbuf[260];
         const wchar_t *path;
         if (target == g_addr_CreateFileA) {
@@ -855,8 +964,16 @@ int es3_native_call(CPU *c, uint64_t target)
             path = (const wchar_t *)(uintptr_t)f.rcx;
         }
         int ok = f.rax_out != (uint64_t)(intptr_t)INVALID_HANDLE_VALUE;
-        fprintf(stderr, "[file] %s %ls\n", ok ? "open " : "FAIL ", path);
-        if (ok) ft_record(f.rax_out, path);
+        /* Always, and unprinted: the last few opens are what says WHICH map
+         * the engine was loading when it stopped, and --trace-files is far too
+         * heavy to leave on while waiting several minutes for a stall - with
+         * it the game does not reach its first frame at all. A ring of the
+         * last sixteen costs a copy per open. */
+        if (ok) es3_note_file(path);
+        if (g_trace_files) {
+            fprintf(stderr, "[file] %s %ls\n", ok ? "open " : "FAIL ", path);
+            if (ok) ft_record(f.rax_out, path);
+        }
     }
 
     /* Win64 returns integers in RAX and floats in XMM0. Which one the callee
@@ -1414,10 +1531,19 @@ void dispatch(CPU *c, uint64_t target)
                     return;
                 }
         }
+        /* The shadow call stack is maintained ALWAYS, not only under --trace.
+         *
+         * It was gated on --trace together with the dispatch ring, and the two
+         * cost wildly different amounts: the ring is a write into a megabyte
+         * buffer on every call and perturbs timing enough to hide a race,
+         * while this is two stores and a decrement. Gating them together meant
+         * every crash outside --trace reported "depth 0" and no stack, and
+         * turning --trace on to get one changed the timing enough that the
+         * crash being chased stopped happening. */
+        if (cs_depth < CS_MAX) cs_stack[cs_depth] = pref;
+        cs_depth++;
         if (g_trace_enabled) {
             es3_trace(pref, "call");
-            if (cs_depth < CS_MAX) cs_stack[cs_depth] = pref;
-            cs_depth++;
             es3_watch_reader(c, pref);
             es3_log_call(c, pref);
             es3_log_callee(pref);
@@ -1446,11 +1572,14 @@ void dispatch(CPU *c, uint64_t target)
             g_watch_armed = 1;
             fn(c);
             g_watch_armed = 0;
+            cs_depth--;
+            g_cur_cpu = prev_cpu;
             return;
         }
         es3_watch_reader(c, pref);
         es3_log_call(c, pref);
         fn(c);
+        cs_depth--;
         g_cur_cpu = prev_cpu;
         return;
     }

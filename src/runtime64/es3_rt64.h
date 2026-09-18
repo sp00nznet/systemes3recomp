@@ -120,6 +120,9 @@ void es3_trace(uint64_t va, const char *what);
 void es3_trace_dump(const char *why);
 void es3_trace_tail(int n);
 void es3_dump_threads(void);
+/* Reports which thread is spinning when the game stops presenting. */
+void es3_start_watchdog(void);
+void es3_note_file(const wchar_t *path);
 void es3_dump_callstack(const char *why);
 void es3_todo(uint64_t va, const char *text);
 
