@@ -102,6 +102,12 @@ void     es3_card_post_read(uint32_t buf, uint32_t n, uint32_t ovl, uint32_t rou
 void     es3_card_complete_write(uint32_t ovl, uint32_t bytes, uint32_t routine);
 void     es3_card_cancel(void);
 void     es3_card_tap(void);      /* a card held against the reader */
+void     es3_card_state(unsigned char uid[4], int *present, int *reads,
+                        int *writes, unsigned char *image1k);
+const char *es3_card_file(void);
+
+/* passport.c - the card shown in a window beside the game. */
+void     es3_passport_start(void);
 
 /* ---- the import boundary ----
  *

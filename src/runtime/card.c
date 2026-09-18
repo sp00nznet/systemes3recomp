@@ -64,6 +64,7 @@ static unsigned char g_card[CARD_BYTES];
 static unsigned char g_uid[4] = { 0x3E, 0x86, 0xD0, 0x2D };
 static char g_card_path[MAX_PATH];
 static int  g_card_dirty;
+static int  g_n_reads, g_n_writes;   /* what the window counts */
 
 /*
  * Whether a card is on the reader right now, which is a thing a player does
@@ -105,6 +106,25 @@ void es3_card_tap(void)
     g_present_until = GetTickCount64() + CARD_DWELL_MS;
     if (!was && card_trace())
         fprintf(stderr, "[card] card tapped on the reader\n");
+}
+
+/* What the side-car window shows. Copied out under no lock because every
+ * field is written by one thread and read for display: a torn read here costs
+ * one stale frame in a web page, and a lock around the card would be held
+ * across the game's reads. */
+void es3_card_state(unsigned char uid[4], int *present, int *reads, int *writes,
+                    unsigned char *image1k)
+{
+    if (uid) memcpy(uid, g_uid, 4);
+    if (present) *present = card_in_field();
+    if (reads) *reads = g_n_reads;
+    if (writes) *writes = g_n_writes;
+    if (image1k) memcpy(image1k, g_card, CARD_BYTES);
+}
+
+const char *es3_card_file(void)
+{
+    return g_card_path;
 }
 
 static int card_off(void)
@@ -323,6 +343,7 @@ static void mifare(const unsigned char *p, unsigned n, unsigned char *r,
         if (g_auth_sector != blk / 4) { r[2] = 0x14; break; }
         memcpy(r + 3, g_card + blk * BLOCK_BYTES, BLOCK_BYTES);
         *rn = 3 + BLOCK_BYTES;
+        g_n_reads++;
         if (card_trace())
             fprintf(stderr, "[card] read block %u\n", blk);
         break;
@@ -333,6 +354,7 @@ static void mifare(const unsigned char *p, unsigned n, unsigned char *r,
         if (blk == 0) break;                       /* block 0 is read-only */
         memcpy(g_card + blk * BLOCK_BYTES, p + 2, BLOCK_BYTES);
         g_card_dirty = 1;
+        g_n_writes++;
         card_save();
         if (card_trace())
             fprintf(stderr, "[card] wrote block %u\n", blk);
@@ -607,6 +629,9 @@ uint32_t es3_card_open(const char *name)
             if (t) CloseHandle(t);
         }
         g_ready = 1;
+        /* Started here rather than at startup so the window appears with the
+         * reader it belongs to, and never on a run that has no card in it. */
+        es3_passport_start();
         fprintf(stderr,
             "\n[card] the game opened %s, where the IC card reader would be.\n"
             "       This runtime is one: an NXP PN53x, with a MIFARE Classic 1K\n"
@@ -695,6 +720,9 @@ void es3_card_cancel(void)
 
 #else
 void es3_card_tap(void) {}
+void es3_card_state(unsigned char u[4], int *p, int *r, int *w, unsigned char *i)
+{ (void)u; (void)p; (void)r; (void)w; (void)i; }
+const char *es3_card_file(void) { return ""; }
 int es3_card_is_port(uint32_t h) { (void)h; return 0; }
 uint32_t es3_card_open(const char *n) { (void)n; return 0; }
 int es3_card_write(uint32_t b, uint32_t n) { (void)b; (void)n; return 0; }

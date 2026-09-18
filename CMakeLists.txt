@@ -59,6 +59,7 @@ function(es3_runtime target generated_dir)
         "${ES3_RUNTIME_DIR}/dxgi_shot.c"
         "${ES3_RUNTIME_DIR}/jvs.c"
         "${ES3_RUNTIME_DIR}/card.c"
+        "${ES3_RUNTIME_DIR}/passport.c"
         "${ES3_RUNTIME_DIR}/allnet.c"
         "${ES3_RUNTIME_DIR}/debug.c"
         "${ES3_HYBRID_DIR}/hybrid.c"
