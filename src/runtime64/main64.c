@@ -39,6 +39,14 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--trace-files")) g_trace_files = 1;
         else if (!strcmp(argv[i], "--watch-serialize") && i + 1 < argc)
             g_watch_serialize = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--watch-reader") && i + 1 < argc)
+            g_watch_reader = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--log-call") && i + 1 < argc) {
+            char *sp = argv[++i], *tok;
+            for (tok = strtok(sp, ","); tok && g_n_log_calls < 8;
+                 tok = strtok(NULL, ","))
+                g_log_calls[g_n_log_calls++] = strtoull(tok, NULL, 0);
+        }
         else if (!strcmp(argv[i], "--game-args") && i + 1 < argc)
             game_args = argv[++i];
         else if (!strcmp(argv[i], "--limit") && i + 1 < argc)

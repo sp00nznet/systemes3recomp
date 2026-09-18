@@ -96,6 +96,7 @@ int es3_bridge_callback(struct _EXCEPTION_POINTERS *ep);
  * down. The trail is a ring buffer in memory, dumped on a fault. */
 void es3_trace(uint64_t va, const char *what);
 void es3_trace_dump(const char *why);
+void es3_trace_tail(int n);
 void es3_install_crash_handler(void);
 
 extern int g_trace_enabled;
@@ -103,5 +104,11 @@ extern uint64_t g_dispatch_limit;
 extern uint64_t g_dispatch_count;
 extern int g_swallow_raise;
 extern uint64_t g_watch_serialize;
+extern uint64_t g_watch_reader;
+extern __declspec(thread) int g_watch_armed;
+void es3_watch_reader(CPU *c, uint64_t pref);
+extern uint64_t g_log_calls[8];
+extern int g_n_log_calls;
+void es3_log_call(CPU *c, uint64_t pref);
 
 #endif /* ES3_RT64_H */

@@ -26,7 +26,8 @@ int g_trace_enabled = 0;
 uint64_t g_dispatch_limit = 0;      /* 0 = unlimited */
 uint64_t g_dispatch_count = 0;
 int g_swallow_raise = 0;
-uint64_t g_watch_serialize = 0;   /* --watch-serialize <va> */    /* diagnostic; see the RaiseException note */
+uint64_t g_watch_serialize = 0;
+uint64_t g_watch_reader = 0;   /* --watch-serialize <va> */    /* diagnostic; see the RaiseException note */
 
 /* Bringing a new image up, the trail matters more than the fault: a guest that
  * runs away ends up faulting somewhere unrelated to the mistake, and the last
@@ -194,6 +195,73 @@ static int ft_is_text(uint64_t h, const wchar_t **path)
     if (i < 0) return 0;
     if (path) *path = g_ft[i].path;
     return g_ft[i].is_text;
+}
+
+/* ---- watching the buffer a package is actually read from ----
+ *
+ * UE3 does not read a cooked package through ReadFile at the point the summary
+ * is parsed - it reads it out of memory. The archive underneath is an
+ * FBufferReader:
+ *
+ *     memmove(V, (BYTE*)this->Data + this->Pos, Length);  Pos += Length;
+ *
+ * with Data at [this+0x88] and Pos at [this+0x90]. So when the engine says the
+ * package tag is wrong, the question is not what the FILE contains - that has
+ * been verified byte for byte - but what that buffer contains and where Pos is
+ * pointing. Printing both, once, at the read the tag check is about to reject,
+ * is the whole diagnosis.
+ *
+ * Armed by the summary parser so this fires on the one read that matters; the
+ * reader itself runs constantly.
+ */
+__declspec(thread) int g_watch_armed;
+
+/* ---- --log-call: report a named guest function whenever it runs ----
+ *
+ * The dispatch ring answers "what ran just before this", but not "did THIS
+ * ever run", because the ring is a window and the answer is often outside it.
+ * Absence from the ring is not absence from the program, and reading it that
+ * way turns a missing window into a false conclusion. */
+uint64_t g_log_calls[8];
+int g_n_log_calls;
+
+void es3_log_call(CPU *c, uint64_t pref)
+{
+    for (int i = 0; i < g_n_log_calls; i++)
+        if (g_log_calls[i] == pref) {
+            fprintf(stderr, "[call] %#llx rcx=%#llx rdx=%#llx r8=%#llx\n",
+                    (unsigned long long)pref, (unsigned long long)c->rcx,
+                    (unsigned long long)c->rdx, (unsigned long long)c->r8);
+            if (g_trace_enabled) es3_trace_tail(24);
+            return;
+        }
+}
+
+void es3_watch_reader(CPU *c, uint64_t pref)
+{
+    if (!g_watch_armed || !g_watch_reader || pref != g_watch_reader) return;
+    g_watch_armed = 0;
+    uint64_t self = c->rcx;
+    uint64_t dataptr = rd64(self + 0x88);
+    uint32_t pos = rd32(self + 0x90);
+    /* The vtable identifies the class, and the class is what says which
+     * constructor stored that Data pointer - the one piece of information a
+     * memory dump of the buffer cannot give. */
+    uint64_t vt = rd64(self);
+    fprintf(stderr, "[bufreader] this=%#llx vtable=%#llx (image+%#llx) "
+                    "Data=%#llx Pos=%u len=%llu\n",
+            (unsigned long long)self, (unsigned long long)vt,
+            (unsigned long long)(vt - (uint64_t)(uintptr_t)g_image.base),
+            (unsigned long long)dataptr, pos, (unsigned long long)c->r8);
+    fprintf(stderr, "[bufreader] Data is %s this\n",
+            dataptr > self ? "ABOVE" : "BELOW");
+    if (dataptr) {
+        fprintf(stderr, "[bufreader] Data[0..15] :");
+        for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", rd8(dataptr + i));
+        fprintf(stderr, "\n[bufreader] Data[Pos..] :");
+        for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", rd8(dataptr + pos + i));
+        fprintf(stderr, "\n");
+    }
 }
 
 /* ---- the native side ---- */
@@ -683,25 +751,14 @@ void dispatch(CPU *c, uint64_t target)
          * unconditionally buries the one call that matters among thousands
          * that do not. Arming on the caller makes the output exactly the read
          * whose result the tag check is about to reject. */
-        static __declspec(thread) int armed;
         if (g_watch_serialize && pref == g_watch_serialize) {
-            armed = 1;
+            g_watch_armed = 1;
             fn(c);
-            armed = 0;
+            g_watch_armed = 0;
             return;
         }
-        if (armed && pref == 0x14000B900ull) {
-            uint64_t dst = c->rdx, len = c->r8, ar = c->rcx;
-            armed = 0;
-            fn(c);
-            if (dst && len >= 4)
-                fprintf(stderr, "[summary-tag] archive=%#llx dest=%#llx len=%llu"
-                                " -> %02X %02X %02X %02X\n",
-                        (unsigned long long)ar, (unsigned long long)dst,
-                        (unsigned long long)len,
-                        rd8(dst), rd8(dst + 1), rd8(dst + 2), rd8(dst + 3));
-            return;
-        }
+        es3_watch_reader(c, pref);
+        es3_log_call(c, pref);
         fn(c);
         return;
     }
@@ -726,6 +783,10 @@ void dispatch_jmp(CPU *c, uint64_t target)
     void (*fn)(CPU *) = lookup(pref);
     if (fn) {
         if (g_trace_enabled) es3_trace(pref, "tail");
+        /* The buffer reader is reached by a TAIL jump from the forwarding
+         * thunk, so the probe has to live on this path too. */
+        es3_watch_reader(c, pref);
+        es3_log_call(c, pref);
         fn(c);
         return;
     }

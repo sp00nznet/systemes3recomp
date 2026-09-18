@@ -68,6 +68,27 @@ void es3_trace_dump(const char *why)
     }
 }
 
+void es3_trace_tail(int n)
+{
+    /* Straight to stderr, not to the dump file.
+     *
+     * es3_trace_dump writes one fixed filename, so a dump taken at an
+     * interesting moment is overwritten by whatever exception ends the process
+     * afterwards - and reading that file then answers a question about the
+     * wrong moment. This prints where it is asked, when it is asked. */
+    long head = g_head;
+    long have = head < TRACE_N ? head : TRACE_N;
+    if (n > have) n = (int)have;
+    fprintf(stderr, "[trail] last %d dispatches:\n", n);
+    for (long k = n; k > 0; k--) {
+        long i = (head - k) & (TRACE_N - 1);
+        if (!g_ring[i].what) continue;
+        const char *nm = es3_import_name(g_ring[i].va);
+        fprintf(stderr, "  %-12s %#018llx %s\n", g_ring[i].what,
+                (unsigned long long)g_ring[i].va, nm ? nm : "");
+    }
+}
+
 static LONG WINAPI es3_seh(EXCEPTION_POINTERS *ep)
 {
     char msg[256];
