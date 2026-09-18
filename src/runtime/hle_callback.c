@@ -1704,6 +1704,157 @@ static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
     return 1;
 }
 
+/*
+ * A devnode for the board, spliced onto the end of the tree.
+ *
+ * Having been given the board's driver key, the game does not look it up.
+ * Its imports say how it resolves one: CM_Locate_DevNodeW with a null name
+ * for the ROOT, then CM_Get_Child and CM_Get_Sibling to walk, and
+ * CM_Get_DevNode_Registry_PropertyW on each node to read its driver key and
+ * compare. A key belonging to no real devnode cannot be found that way, so
+ * the board needs a node in the tree as well as a name.
+ *
+ * It is added where the walk would otherwise stop: when a sibling chain runs
+ * out, hand back ours instead of "no more". That leaves every real node's
+ * links exactly as they were - nothing is re-pointed, nothing is hidden, and
+ * a walk that never reaches the end of a chain never sees it. Ours reports no
+ * children and the root as its parent, so the walk terminates normally.
+ *
+ * CR_SUCCESS is 0; CR_NO_SUCH_DEVNODE is 13, CR_NO_SUCH_VALUE 37,
+ * CR_BUFFER_SMALL 26.
+ */
+#define IOB_DEVNODE     0x0B9A0C10u       /* cannot collide: real ones index */
+#define CR_SUCCESS      0u
+#define CR_NO_SUCH_NODE 13u
+#define CR_NO_SUCH_VAL  37u
+#define CR_BUF_SMALL    26u
+
+static uint32_t g_iob_root;               /* what the null lookup returned */
+static int g_iob_node_given;              /* one per sibling chain walk */
+
+/* Does the board exist to be found at all? Only if a port was claimed. */
+static int ioboard_has_node(void)
+{
+    return ioboard_on() && g_iob_port != 0xFFFFFFFFu;
+}
+
+#define CM_RET(c, v, argc) do { (c)->eax = (uint32_t)(v); \
+                                (c)->esp += 4 + 4 * (argc); } while (0)
+
+/* CM_Get_Child(pdnDevInst, dnDevInst, ulFlags) - ours is a leaf. */
+static void hle_cm_get_child(CPU *c, HleId id)
+{
+    if (ioboard_has_node() && A32(1) == IOB_DEVNODE) {
+        CM_RET(c, CR_NO_SUCH_NODE, 3);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/* CM_Get_Sibling(pdnDevInst, dnDevInst, ulFlags) - the splice point. */
+static void hle_cm_get_sibling(CPU *c, HleId id)
+{
+    uint32_t out = A32(0), node = A32(1);
+
+    if (ioboard_has_node() && node == IOB_DEVNODE) {
+        CM_RET(c, CR_NO_SUCH_NODE, 3);      /* ours is last */
+        return;
+    }
+
+    hle_call_native(c, id);
+
+    /* The chain ended. Append the board rather than letting the walk stop. */
+    if (ioboard_has_node() && c->eax != CR_SUCCESS && out &&
+        !g_iob_node_given) {
+        g_iob_node_given = 1;
+        wr32(out, IOB_DEVNODE);
+        c->eax = CR_SUCCESS;
+        if (io_trace())
+            fprintf(stderr, "[io] the device tree walk ran out of siblings; "
+                            "handing it the board's devnode\n");
+    }
+}
+
+/* CM_Get_Parent(pdnDevInst, dnDevInst, ulFlags). */
+static void hle_cm_get_parent(CPU *c, HleId id)
+{
+    uint32_t out = A32(0), node = A32(1);
+    if (ioboard_has_node() && node == IOB_DEVNODE) {
+        if (out) wr32(out, g_iob_root);
+        CM_RET(c, g_iob_root ? CR_SUCCESS : CR_NO_SUCH_NODE, 3);
+        return;
+    }
+    hle_call_native(c, id);
+}
+
+/*
+ * CM_Get_DevNode_Registry_PropertyW(dnDevInst, ulProperty, pulRegDataType,
+ *                                   Buffer, pulLength, ulFlags)
+ *
+ * The property number is printed rather than assumed. CM_DRP_DRIVER should be
+ * 10, but the cost of being wrong about a constant here is a walk that never
+ * matches and no way to see why, and this file has already paid that twice
+ * today. Whatever the game asks of our node, the trace names it.
+ */
+static void hle_cm_get_devnode_prop(CPU *c, HleId id)
+{
+    uint32_t node = A32(0), prop = A32(1), type = A32(2);
+    uint32_t buf = A32(3), plen = A32(4);
+    uint32_t need = (uint32_t)(sizeof k_iob_key);
+
+    if (!ioboard_has_node() || node != IOB_DEVNODE) {
+        hle_call_native(c, id);
+        return;
+    }
+
+    if (io_trace()) {
+        static int shown;
+        if (shown < 12) {
+            shown++;
+            fprintf(stderr, "[io] the board's devnode is asked for property "
+                            "%u (buffer %u)\n", prop,
+                    plen ? rd32(plen) : 0u);
+            fflush(stderr);
+        }
+    }
+
+    /* 10 is CM_DRP_DRIVER, the driver key - the one the walk compares. */
+    if (prop == 10u) {
+        if (type) wr32(type, 1u);               /* REG_SZ */
+        if (!buf || !plen || rd32(plen) < need) {
+            if (plen) wr32(plen, need);
+            CM_RET(c, CR_BUF_SMALL, 6);
+            return;
+        }
+        memcpy((void *)(uintptr_t)buf, k_iob_key, need);
+        wr32(plen, need);
+        CM_RET(c, CR_SUCCESS, 6);
+        return;
+    }
+
+    /* 1 is CM_DRP_DEVICEDESC. Asked for right after the driver key matched,
+     * so the node is the one the game settled on - and a device with no
+     * description at all is a thing no real node is. */
+    if (prop == 1u) {
+        static const wchar_t desc[] = L"Namco I/O Board (NA-JV)";
+        uint32_t dn = (uint32_t)(sizeof desc);
+        if (type) wr32(type, 1u);               /* REG_SZ */
+        if (!buf || !plen || rd32(plen) < dn) {
+            if (plen) wr32(plen, dn);
+            CM_RET(c, CR_BUF_SMALL, 6);
+            return;
+        }
+        memcpy((void *)(uintptr_t)buf, desc, dn);
+        wr32(plen, dn);
+        CM_RET(c, CR_SUCCESS, 6);
+        return;
+    }
+
+    /* Anything else: say the node has no such value, which is a normal
+     * answer for a device and keeps the walk going. */
+    CM_RET(c, CR_NO_SUCH_VAL, 6);
+}
+
 /* CM_Locate_DevNodeW(pdnDevInst, pDeviceID, ulFlags) - CR_SUCCESS is 0. */
 static void hle_cm_locate_devnode(CPU *c, HleId id)
 {
@@ -1735,7 +1886,20 @@ static void hle_cm_locate_devnode(CPU *c, HleId id)
         c->esp += 4 + 4 * 3;
         return;
     }
+
     hle_call_native(c, id);
+
+    /*
+     * A null name is the root, and the root is where a walk begins - so this
+     * is both where the board's parent comes from and the one honest place to
+     * arm the splice again. Arming it per walk rather than once means a
+     * second pass finds the board too; arming it anywhere else would hand
+     * the same node out twice inside one chain.
+     */
+    if (!name && c->eax == CR_SUCCESS && out) {
+        g_iob_root = rd32(out);
+        g_iob_node_given = 0;
+    }
 }
 
 static void hle_device_io_control(CPU *c, HleId id)
@@ -2031,6 +2195,10 @@ void hle_register_callbacks(void)
     hle_bind("DirectInput8Create", hle_dinput8_create);
     hle_bind("fopen_s", hle_fopen_s);
     hle_bind("CM_Locate_DevNodeW", hle_cm_locate_devnode);
+    hle_bind("CM_Get_Child", hle_cm_get_child);
+    hle_bind("CM_Get_Sibling", hle_cm_get_sibling);
+    hle_bind("CM_Get_Parent", hle_cm_get_parent);
+    hle_bind("CM_Get_DevNode_Registry_PropertyW", hle_cm_get_devnode_prop);
     hle_bind("SetupDiGetClassDevsW", hle_setupdi_classdevs);
     hle_bind("SetupDiEnumDeviceInterfaces", hle_setupdi_enum_iface);
     hle_bind("SetupDiGetDeviceInterfaceDetailW", hle_setupdi_iface_detail);
