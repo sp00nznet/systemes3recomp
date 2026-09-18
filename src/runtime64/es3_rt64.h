@@ -72,6 +72,7 @@ extern uint64_t g_addr_CreateFileW;
 extern uint64_t g_addr_CreateFileA;
 extern uint64_t g_addr_WriteFile;
 extern int g_trace_files;
+extern int g_guest_log;
 extern uint64_t g_addr_GetCommandLineW;
 extern uint64_t g_addr_GetCommandLineA;
 extern uint64_t g_addr_ReadFile;

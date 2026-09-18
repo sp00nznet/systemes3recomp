@@ -203,6 +203,7 @@ void es3_set_guest_cmdline(const char *exe, const char *args)
  * performs and a UE3 startup performs a great many.
  */
 int g_trace_files = 0;
+int g_guest_log = 0;    /* --guest-log: echo OutputDebugString */
 
 /* The private stack a bridged native->guest call runs on, and how much of the
  * caller's frame travels with it: the return address, the 32 bytes of shadow

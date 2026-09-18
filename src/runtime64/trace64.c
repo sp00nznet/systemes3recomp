@@ -240,8 +240,33 @@ static LONG CALLBACK es3_veh(EXCEPTION_POINTERS *ep)
         es3_trace_dump("guest C++ throw");
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    if (code == (DWORD)DBG_PRINTEXCEPTION_C)
-        return EXCEPTION_CONTINUE_SEARCH;
+    /* ---- the guest's own log ----
+     *
+     * OutputDebugString does not write anywhere; it RAISES, with the text in
+     * the exception record, and a debugger is what normally picks it up. There
+     * is no debugger here, so UE3 has been narrating its startup - every
+     * warning, every "couldn't find", every subsystem announcing itself - into
+     * an exception filter that waved it through unread.
+     *
+     * 0x40010006 carries ANSI, 0x4001000A wide. Information[0] is the length
+     * including the terminator, Information[1] the text.
+     */
+    if (code == 0x40010006u || code == 0x4001000Au) {
+        const EXCEPTION_RECORD *r = ep->ExceptionRecord;
+        if (g_guest_log && r->NumberParameters >= 2 && r->ExceptionInformation[1]) {
+            __try {
+                if (code == 0x4001000Au)
+                    fprintf(stderr, "[log] %.*ls",
+                            (int)r->ExceptionInformation[0],
+                            (const wchar_t *)r->ExceptionInformation[1]);
+                else
+                    fprintf(stderr, "[log] %.*s",
+                            (int)r->ExceptionInformation[0],
+                            (const char *)r->ExceptionInformation[1]);
+            } __except (EXCEPTION_EXECUTE_HANDLER) { }
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
 
     es3_seh(ep);
     return EXCEPTION_CONTINUE_SEARCH;
