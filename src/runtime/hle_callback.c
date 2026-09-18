@@ -1639,7 +1639,7 @@ static const wchar_t k_iob_key[] = L"ES3-SYNTHETIC-NAMCO-IO-BOARD";
 /* USB_NODE_CONNECTION_DRIVERKEY_NAME: ConnectionIndex, ActualLength, then
  * the name. */
 static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
-                             uint32_t outlen)
+                             uint32_t outlen, uint32_t bytesret)
 {
     uint32_t need = (uint32_t)(sizeof k_iob_key);
     if (!ioboard_on() || !inbuf || !outbuf) return 0;
@@ -1652,9 +1652,55 @@ static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
     if (rd32(inbuf) != g_iob_port) return 0;
     if (outlen < 8u) return 0;
 
-    wr32(outbuf + 4u, need);                  /* ActualLength */
-    if (outlen < 8u + need) return 1;         /* a size query: length is enough */
+    /*
+     * All three fields, and the returned count.
+     *
+     * The first version wrote ActualLength and the name and nothing else,
+     * which is not what a caller sees from the real driver: ConnectionIndex
+     * is echoed back, and DeviceIoControl's lpBytesReturned says how much of
+     * the buffer was filled. Code that checks either - and USB enumeration
+     * code usually checks both, because the size query depends on it - reads
+     * a zero and concludes the call did nothing.
+     */
+    wr32(outbuf + 0u, g_iob_port);            /* ConnectionIndex, echoed */
+    /*
+     * ActualLength, and the eight bytes the caller loses on the way back.
+     *
+     * Measured: answering a size query with 8 + name brought the second call
+     * back with a buffer eight bytes SMALLER than that, so the caller is
+     * subtracting the header it then fails to re-add. Refusing the short
+     * buffer made it ask the size again, forever - two calls of 10 bytes and
+     * two of 58 per scan, and no name ever fetched. Reporting the figure
+     * that makes its arithmetic land on 8 + name is the difference between
+     * a loop and a board. ES3_IOB_ACTUAL overrides it if some other caller
+     * ever does this properly.
+     */
+    {
+        const char *w = getenv("ES3_IOB_ACTUAL");
+        wr32(outbuf + 4u, w ? (uint32_t)strtoul(w, NULL, 0) : need + 16u);
+    }
+
+    if (outlen < 8u + need) {                 /* a size query: length only */
+        if (bytesret) wr32(bytesret, 8u);
+        if (io_trace())
+            fprintf(stderr, "[io] driverkey for port %u: given %u bytes of "
+                            "buffer, need %u\n", g_iob_port, outlen,
+                    8u + need);
+        return 1;
+    }
+
     memcpy((void *)(uintptr_t)(outbuf + 8u), k_iob_key, need);
+    if (bytesret) wr32(bytesret, 8u + need);
+    {
+        static int said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "[io] gave the board a driver key for port %u: "
+                            "ES3-SYNTHETIC-NAMCO-IO-BOARD (%u bytes of %u)\n",
+                    g_iob_port, 8u + need, outlen);
+            fflush(stderr);
+        }
+    }
     return 1;
 }
 
@@ -1662,6 +1708,20 @@ static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
 static void hle_cm_locate_devnode(CPU *c, HleId id)
 {
     uint32_t out = A32(0), name = A32(1);
+
+    /* Every call, matched or not. "Never reached with our name" and "reached
+     * with a name we do not recognise" are different problems and the hook
+     * that only spoke on a match could not tell them apart. */
+    if (io_trace()) {
+        static int shown;
+        if (shown < 8) {
+            shown++;
+            fprintf(stderr, "[io] CM_Locate_DevNodeW(%ls)\n",
+                    name ? (const wchar_t *)(uintptr_t)name : L"(null)");
+            fflush(stderr);
+        }
+    }
+
     if (ioboard_on() && name &&
         wcsstr((const wchar_t *)(uintptr_t)name, k_iob_key) != NULL) {
         static int said;
@@ -1716,7 +1776,8 @@ static void hle_device_io_control(CPU *c, HleId id)
                     c->eax ? "ok" : "FAILED");
         }
     }
-    if (code == 0x00220420u && ioboard_driverkey(h, inbuf, outbuf, outlen)) {
+    if (code == 0x00220420u &&
+        ioboard_driverkey(h, inbuf, outbuf, outlen, bytesret)) {
         SetLastError(0);
         c->eax = 1;
     }
