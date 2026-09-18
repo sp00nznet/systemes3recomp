@@ -30,6 +30,23 @@ typedef struct {
 static import_rec_t *g_imports;
 static int g_nimports;
 
+/* Imports the runtime has to intervene in, rather than forward. Resolved once
+ * at load time so the check in es3_native_call is a pointer compare. */
+uint64_t g_addr_RaiseException;
+uint64_t g_addr_initterm;
+uint64_t g_addr_initterm_e;
+uint64_t g_addr_CreateThread;
+
+/* Resolved by name as the import table is walked. A table rather than a chain
+ * of strcmps so that adding the next one - and there will be a next one, every
+ * callback-taking import needs an entry - is one line. */
+static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
+    { "RaiseException", &g_addr_RaiseException },
+    { "_initterm",      &g_addr_initterm      },
+    { "_initterm_e",    &g_addr_initterm_e    },
+    { "CreateThread",   &g_addr_CreateThread  },
+};
+
 const char *es3_import_name(uint64_t addr)
 {
     static char buf[160];
@@ -71,11 +88,25 @@ int es3_load_image(const char *path)
      * zero and every GVA() in four million lines of generated C is the identity
      * - which is worth trying for, though the .reloc path below is real and
      * exercised when something else already owns 0x140000000. */
+    /* READWRITE, deliberately NOT EXECUTE.
+     *
+     * Every byte of this image's code has been recompiled, so nothing should
+     * ever execute from it - the lifted C is the program now. But the original
+     * machine code is still sitting there, and its IAT has just been filled
+     * with real function addresses, so it WOULD run if anything jumped to it:
+     * the ABI is the same and the data is shared. That is the failure this
+     * prevents. Hand a guest callback to a native API - a thread procedure, a
+     * window procedure, a qsort comparator - and the DLL calls the original
+     * code, which runs perfectly and silently, bypassing the recompilation
+     * entirely. The build would look like it worked.
+     *
+     * Non-executable turns that into an immediate access violation naming the
+     * guest address, which is a callback that needs a real thunk. */
     void *base = VirtualAlloc((void *)want, size, MEM_RESERVE | MEM_COMMIT,
-                              PAGE_EXECUTE_READWRITE);
+                              PAGE_READWRITE);
     if (!base) {
         base = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT,
-                            PAGE_EXECUTE_READWRITE);
+                            PAGE_READWRITE);
         if (!base) {
             fprintf(stderr, "[loader] VirtualAlloc %llu bytes failed (%lu)\n",
                     (unsigned long long)size, GetLastError());
@@ -192,6 +223,9 @@ int es3_load_image(const char *path)
                 snprintf(g_imports[g_nimports].dll, sizeof g_imports[0].dll, "%s", dll);
                 snprintf(g_imports[g_nimports].name, sizeof g_imports[0].name, "%s", nm);
                 g_nimports++;
+                for (size_t q = 0; q < sizeof k_intercepts / sizeof k_intercepts[0]; q++)
+                    if (!strcmp(nm, k_intercepts[q].name))
+                        *k_intercepts[q].slot = (uint64_t)fp;
             }
         }
     }

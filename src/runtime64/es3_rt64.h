@@ -63,6 +63,21 @@ int  es3_native_call(CPU *c, uint64_t target);
 /* Diagnostics: the name behind a native address, or NULL. */
 const char *es3_import_name(uint64_t addr);
 
+/* Imports the runtime intervenes in; resolved at load time. */
+extern uint64_t g_addr_RaiseException;
+extern uint64_t g_addr_initterm;
+extern uint64_t g_addr_initterm_e;
+extern uint64_t g_addr_CreateThread;
+
+/* Enter a lifted function from the runtime - for a guest callback a real DLL
+ * would otherwise call directly. */
+void es3_call_guest(CPU *c, uint64_t target);
+
+/* Bridge a native->guest call caught as a DEP execute fault. Returns 1 if it
+ * handled the fault, in which case the thread should continue execution. */
+struct _EXCEPTION_POINTERS;
+int es3_bridge_callback(struct _EXCEPTION_POINTERS *ep);
+
 /* ---- tracing ----
  * A recompiled game that stops has stopped SOMEWHERE, and with no symbols and
  * no debugger attached the only way to find out where is to have written it
@@ -74,5 +89,6 @@ void es3_install_crash_handler(void);
 extern int g_trace_enabled;
 extern uint64_t g_dispatch_limit;
 extern uint64_t g_dispatch_count;
+extern int g_swallow_raise;
 
 #endif /* ES3_RT64_H */

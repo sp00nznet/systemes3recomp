@@ -75,10 +75,28 @@ static LONG WINAPI es3_seh(EXCEPTION_POINTERS *ep)
         /* The address the guest tried to touch is the diagnosis nine times out
          * of ten: near zero is an uninitialised pointer, and a value that looks
          * like a guest address with a 4 GB-multiple offset is a 32-bit register
-         * write that failed to zero-extend. */
-        fprintf(stderr, "[crash] %s address %#llx\n",
-                ep->ExceptionRecord->ExceptionInformation[0] ? "write to" : "read from",
-                (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1]);
+         * write that failed to zero-extend.
+         *
+         * Operation 8 is a DEP violation, and it is worth its own message
+         * rather than being lumped in with "write" - guest memory is mapped
+         * non-executable on purpose, so an execute fault inside the image is
+         * not a corrupt pointer at all. It is a native caller reaching a guest
+         * callback that needs a thunk, and it names the exact address. */
+        ULONG_PTR op = ep->ExceptionRecord->ExceptionInformation[0];
+        ULONG_PTR at = ep->ExceptionRecord->ExceptionInformation[1];
+        const char *what = op == 8 ? "EXECUTE" : op ? "write to" : "read from";
+        fprintf(stderr, "[crash] %s address %#llx\n", what, (unsigned long long)at);
+        if (op == 8 && g_image.base &&
+            at >= (ULONG_PTR)g_image.base &&
+            at < (ULONG_PTR)g_image.base + g_image.size) {
+            fprintf(stderr,
+                "[crash] that is INSIDE the guest image, which is mapped\n"
+                "[crash] non-executable because all of its code was recompiled.\n"
+                "[crash] Something native called a guest address directly - a\n"
+                "[crash] callback (thread proc, window proc, comparator) handed\n"
+                "[crash] to a real DLL. It needs a thunk that enters the lifted\n"
+                "[crash] function instead.\n");
+        }
     }
     es3_trace_dump(msg);
     return EXCEPTION_EXECUTE_HANDLER;
@@ -87,6 +105,13 @@ static LONG WINAPI es3_seh(EXCEPTION_POINTERS *ep)
 static LONG CALLBACK es3_veh(EXCEPTION_POINTERS *ep)
 {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
+
+    /* A native caller reaching a guest function is not a crash - it is a
+     * callback, and it is bridged rather than reported. Checked first and
+     * silently, because it is a normal event that happens thousands of times.
+     */
+    if (es3_bridge_callback(ep))
+        return EXCEPTION_CONTINUE_EXECUTION;
 
     /* Every exception gets a line, always. Passing one over silently as
      * "benign" is how a run ends with an exit code and no explanation: nothing
