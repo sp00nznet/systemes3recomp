@@ -184,7 +184,12 @@ function(es3_runtime64 target generated_dir)
     # ignores it, and leaves the abort() default in RECOMP_TODO - so an
     # unexpressed instruction ends the process with no output at all, which
     # reads as a crash somewhere else entirely.
+    # /MP is not a nicety at this scale. A lifted Win64 title is a couple of
+    # hundred translation units of machine-written C, and MSBuild compiles them
+    # one at a time by default - the difference is minutes against most of an
+    # hour, every time the catalog changes.
     target_compile_options(${target} PRIVATE
+        /MP
         /FI"${ES3_RUNTIME64_DIR}/es3_todo.h"
         /W1 /wd4244 /wd4267 /wd4018 /wd4102 /wd4101 /wd4146 /wd4996)
     # No /BASE, no /DYNAMICBASE:NO, no /LARGEADDRESSAWARE, and no /STACK.
