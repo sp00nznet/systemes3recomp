@@ -111,6 +111,53 @@ void es3_trace_tail(int n)
     }
 }
 
+/* --find-string: is this text anywhere in guest memory?
+ *
+ * Settles "did the package actually decompress" without reverse-engineering
+ * the decompressor. A UE3 package's name table lives inside an LZO chunk; if
+ * the engine inflated Startup.upk correctly then every FName in it is sitting
+ * in the heap as plain ASCII, and if it did not, it is not.
+ *
+ * ponytail: naive memchr over every committed region, ~seconds on a few GB.
+ * Only ever runs once, at the throw.
+ */
+const char *g_find_string;
+
+void es3_find_string(void)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char *p = 0;
+    size_t n;
+    int hits = 0;
+
+    if (!g_find_string) return;
+    n = strlen(g_find_string);
+    fprintf(stderr, "[find] scanning guest memory for \"%s\"\n", g_find_string);
+    while (VirtualQuery(p, &mbi, sizeof mbi) == sizeof mbi) {
+        unsigned char *base = (unsigned char *)mbi.BaseAddress;
+        size_t sz = mbi.RegionSize;
+        if (mbi.State == MEM_COMMIT && !(mbi.Protect & PAGE_GUARD) &&
+            mbi.Protect != PAGE_NOACCESS) {
+            unsigned char *q = base, *end = base + sz - n;
+            while (q <= end) {
+                unsigned char *h = memchr(q, g_find_string[0], (size_t)(end - q) + 1);
+                if (!h) break;
+                if (!memcmp(h, g_find_string, n)) {
+                    if (hits < 8)
+                        fprintf(stderr, "[find] hit at %p (region %p size %llu prot %#lx)\n",
+                                (void *)h, (void *)base,
+                                (unsigned long long)sz, (unsigned long)mbi.Protect);
+                    hits++;
+                }
+                q = h + 1;
+            }
+        }
+        if (base + sz <= p) break;
+        p = base + sz;
+    }
+    fprintf(stderr, "[find] \"%s\": %d hit(s)\n", g_find_string, hits);
+}
+
 static LONG WINAPI es3_seh(EXCEPTION_POINTERS *ep)
 {
     char msg[256];
@@ -236,6 +283,7 @@ static LONG CALLBACK es3_veh(EXCEPTION_POINTERS *ep)
             fprintf(stderr, "[throw] guest PC (block) %#llx\n",
                     (unsigned long long)g_cur_cpu->rip);
         es3_dump_callstack("at the throw");
+        es3_find_string();
         es3_dump_threads();
         es3_trace_dump("guest C++ throw");
         return EXCEPTION_CONTINUE_SEARCH;

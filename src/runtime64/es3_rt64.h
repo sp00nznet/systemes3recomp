@@ -65,6 +65,7 @@ const char *es3_import_name(uint64_t addr);
 
 /* Imports the runtime intervenes in; resolved at load time. */
 extern uint64_t g_addr_RaiseException;
+extern uint64_t g_addr_CxxThrowException;
 extern uint64_t g_addr_initterm;
 extern uint64_t g_addr_initterm_e;
 extern uint64_t g_addr_CreateThread;
@@ -124,5 +125,13 @@ extern int g_n_log_calls;
 void es3_log_call(CPU *c, uint64_t pref);
 extern uint64_t g_callees_of;
 void es3_log_callee(uint64_t pref);
+
+/* Guest C++ exception handling; the engine lives in pcrecomp's
+ * runtime/recomp64_cpu/eh64.c and is declared by cpu64.h. */
+extern uint64_t es3_eh_image_base;
+extern int g_eh_trace;
+
+extern const char *g_find_string;
+void es3_find_string(void);
 
 #endif /* ES3_RT64_H */

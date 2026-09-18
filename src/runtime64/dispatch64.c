@@ -84,6 +84,9 @@ static __declspec(thread) int cs_depth;
  * maintains per basic block - and name the guest instruction. */
 __declspec(thread) CPU *g_cur_cpu;
 
+int  es3_cs_depth_get(void) { return cs_depth; }
+void es3_cs_depth_set(int d) { cs_depth = d; }
+
 void es3_dump_callstack(const char *why)
 {
     fprintf(stderr, "[stack] %s (depth %d, innermost first)\n", why, cs_depth);
@@ -429,6 +432,19 @@ int es3_native_call(CPU *c, uint64_t target)
         c->rax = (uint64_t)(uintptr_t)g_guest_cmdline_a;
         return 1;
     }
+
+    /* ---- the guest's C++ throw ----
+     *
+     * Caught HERE, at the call, and not in a vectored handler: at this point
+     * the guest stack is intact and the host stack is an ordinary one, so the
+     * longjmp that lands in the catching frame does not have to unwind out of
+     * the middle of Windows' exception dispatch.
+     *
+     * void _CxxThrowException(void *object, _ThrowInfo *ti) - rcx, rdx.
+     * es3_eh_throw returns only when no guest frame catches, and then the call
+     * is forwarded and dies the way it used to. */
+    if (target == g_addr_CxxThrowException)
+        es3_eh_throw(c, rd64(gsp), c->rcx, c->rdx);
 
     if (target == g_addr_RaiseException) {
         if ((uint32_t)c->rcx == 0x406D1388u) {

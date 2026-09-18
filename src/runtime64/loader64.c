@@ -33,6 +33,7 @@ static int g_nimports;
 /* Imports the runtime has to intervene in, rather than forward. Resolved once
  * at load time so the check in es3_native_call is a pointer compare. */
 uint64_t g_addr_RaiseException;
+uint64_t g_addr_CxxThrowException;
 uint64_t g_addr_initterm;
 uint64_t g_addr_initterm_e;
 uint64_t g_addr_CreateThread;
@@ -53,6 +54,11 @@ uint64_t g_addr_Direct3DCreate9;
  * callback-taking import needs an entry - is one line. */
 static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     { "RaiseException", &g_addr_RaiseException },
+    /* The throw itself. This build links the DYNAMIC CRT, so the `throw` in
+     * lifted code is a call into MSVCR100 and the RaiseException underneath it
+     * is native-to-native - invisible from here. _CxxThrowException is the last
+     * point that is still a guest call, with the guest's stack under it. */
+    { "_CxxThrowException", &g_addr_CxxThrowException },
     { "_initterm",      &g_addr_initterm      },
     { "_initterm_e",    &g_addr_initterm_e    },
     { "CreateThread",   &g_addr_CreateThread  },
@@ -143,6 +149,7 @@ int es3_load_image(const char *path)
     g_image.preferred = want;
     g_image.size = size;
     g_image_delta = (int64_t)((uint64_t)base - want);
+    es3_eh_image_base = (uint64_t)base;   /* .pdata/.xdata are read live */
 
     /* headers, then every section at its virtual address */
     memcpy(base, raw, nt->OptionalHeader.SizeOfHeaders);
@@ -267,8 +274,10 @@ int es3_load_image(const char *path)
      * exactly like the guest not calling that function at all - a false
      * conclusion that is expensive to reach any other way. */
     for (size_t q = 0; q < sizeof k_intercepts / sizeof k_intercepts[0]; q++)
-        fprintf(stderr, "[loader] intercept %-18s %s\n", k_intercepts[q].name,
-                *k_intercepts[q].slot ? "bound" : "NOT IMPORTED - will never fire");
+        fprintf(stderr, "[loader] intercept %-18s %-28s %#llx\n",
+                k_intercepts[q].name,
+                *k_intercepts[q].slot ? "bound" : "NOT IMPORTED - will never fire",
+                (unsigned long long)*k_intercepts[q].slot);
 
     free(raw);
     return 1;

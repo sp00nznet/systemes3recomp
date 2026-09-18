@@ -44,6 +44,10 @@ int main(int argc, char **argv)
             g_watch_reader = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--watch-alloc") && i + 1 < argc)
             g_watch_alloc = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--eh-trace"))
+            g_eh_trace = 1;
+        else if (!strcmp(argv[i], "--find-string") && i + 1 < argc)
+            g_find_string = argv[++i];
         else if (!strcmp(argv[i], "--log-callees-of") && i + 1 < argc)
             g_callees_of = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--log-call") && i + 1 < argc) {
