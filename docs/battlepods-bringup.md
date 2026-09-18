@@ -146,6 +146,20 @@ being the first one anything references. Which mechanism does that
 registration, and why it is not running, is the open question - and it is a UE3
 content-loading question rather than a recompilation one.
 
+Ruled out, so they are not retried:
+
+* **PCConsoleTOC.txt is not a runtime input.** The binary contains no "TOC",
+  "ConsoleTOC" or "TableOfContents" string at all and never opens the file; it
+  is a cook artifact. It is still useful offline for checking dump
+  completeness, which is how the dump was confirmed complete.
+* **There is no engine log to recover.** The shipping build has logging
+  compiled out: nothing is written to a file, and nothing goes to the
+  OutputDebugString channel either (`--guest-log` reads that channel and
+  produces nothing).
+* **The package loader's return value means nothing.** 0x140085720 is the
+  async preload entry point, not LoadPackage; it returns void, and reports 0
+  for Core and Engine, which plainly do load.
+
 ## Diagnostics
 
 All off by default. `--trace` also enables the lifted call stack.
