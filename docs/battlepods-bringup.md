@@ -194,6 +194,24 @@ Recorded because each one cost a day and each one was convincing.
   `.pdata` the same frames say `"Attempt to assign variable through None"` and
   `"Accessed None '%s'"` - the script interpreter.
 
+## The display, which decides whether any of this can be observed
+
+Nothing renders while the session is **disconnected**. `Direct3DCreate9`
+succeeds and hands back an interface either way; it is the ADAPTER COUNT that
+goes to zero, and UE3 treats that as fatal before it loads a single package -
+so the log shows an early `RaiseException(1)` with nothing before it and no
+mention of a display.
+
+    query session          # own session Conn or Disc
+    [d3d9] N adapter(s), session active|DISCONNECTED
+
+The runtime prints the second line on every run. **A run reporting 0 adapters
+is void.** Comparing it against a run that had a display says nothing about the
+code, and doing that produced three confidently wrong conclusions in one
+session here - a compiler flag, a struct field and a feature flag were each
+blamed for what was the desktop going away. If two runs disagree, check this
+before believing anything else.
+
 ## Diagnostics
 
 All off by default. `--trace` also enables the lifted call stack.

@@ -154,6 +154,8 @@ extern int g_eh_trace;
 /* Counts frames, because on a session with no display device a black window
  * proves nothing. */
 void es3_d3d9_watch(void *d3d9);
+/* "active" / "DISCONNECTED" - a disconnected session has no D3D adapter. */
+const char *es3_session_state(void);
 extern unsigned long long g_present_count;
 extern unsigned long long g_capture_frame;
 

@@ -232,6 +232,35 @@ static long __stdcall hook_createdevice(void *d3d, unsigned adapter, int type,
 /* IDirect3D9::GetAdapterCount, vtable slot 4. */
 typedef unsigned (__stdcall *pfn_adaptercount)(void *);
 
+/* Whether this session has a desktop attached, resolved late so the runtime
+ * does not have to link wtsapi32 for one diagnostic. WTSConnectState is 0 for
+ * active and 4 for disconnected. */
+const char *es3_session_state(void)
+{
+    typedef int (__stdcall *pfn_q)(void *, unsigned long, int, wchar_t **,
+                                   unsigned long *);
+    typedef void (__stdcall *pfn_f)(void *);
+    HMODULE m = LoadLibraryA("wtsapi32.dll");
+    pfn_q q = m ? (pfn_q)(void *)GetProcAddress(m, "WTSQuerySessionInformationW") : NULL;
+    pfn_f fr = m ? (pfn_f)(void *)GetProcAddress(m, "WTSFreeMemory") : NULL;
+    wchar_t *buf = NULL;
+    unsigned long got = 0;
+    int state = -1;
+
+    if (q && q(NULL, (unsigned long)-1, 8 /* WTSConnectState */, &buf, &got) &&
+        buf && got >= 4) {
+        state = *(const int *)buf;
+        if (fr) fr(buf);
+    }
+    switch (state) {
+    case 0:  return "active";
+    case 1:  return "connected";
+    case 4:  return "DISCONNECTED";
+    case -1: return "unknown";
+    default: return "idle/listening";
+    }
+}
+
 void es3_d3d9_watch(void *d3d9)
 {
     void **vt;
@@ -241,14 +270,19 @@ void es3_d3d9_watch(void *d3d9)
     vt = *(void ***)d3d9;
     n = ((pfn_adaptercount)vt[4])(d3d9);
     /* Reported every run, because it is the first thing to check when a
-     * graphical target dies early and the window is black. A remote session
-     * has no display device: Direct3DCreate9 still SUCCEEDS there and returns
-     * an interface, and it is the adapter count that comes back zero - after
-     * which UE3 raises a fatal error before it loads a single package, which
-     * looks nothing like a display problem from the log. */
-    fprintf(stderr, "[d3d9] %u adapter(s)%s\n", n,
-            n ? "" : "  - NO DISPLAY DEVICE on this session; nothing will "
-                     "render and the engine will abort early");
+     * graphical target dies early and the window is black.
+     *
+     * The cause, when it is zero, is almost always that the session is
+     * DISCONNECTED - the same binary renders while the desktop is attached and
+     * aborts before loading a package once it is not, and nothing else in the
+     * log says so. So the session state is printed next to the count: a run
+     * that says "disconnected" is a void run and comparing it against another
+     * build tells you nothing, which is a mistake that has been made here more
+     * than once. */
+    fprintf(stderr, "[d3d9] %u adapter(s), session %s%s\n", n, es3_session_state(),
+            n ? "" : "  - NO DISPLAY DEVICE; nothing will render, the engine "
+                     "will abort early, and this run is not comparable to one "
+                     "that had a display");
     if (patch_slot(d3d9, D3D9_CREATEDEVICE, (void *)hook_createdevice,
                    (void **)&orig_createdevice))
         fprintf(stderr, "[d3d9] watching CreateDevice/Present\n");
