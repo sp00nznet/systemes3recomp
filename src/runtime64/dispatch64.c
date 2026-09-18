@@ -320,6 +320,18 @@ void es3_log_call(CPU *c, uint64_t pref)
                     (unsigned long long)pref, (unsigned long long)c->rcx,
                     (unsigned long long)c->rdx, (unsigned long long)c->r8,
                     (unsigned long long)rd64(c->rsp));
+            /* The first few fields of *this. A function that returns
+             * immediately does so because of one of them, and printing the
+             * object is the difference between knowing THAT it exited early
+             * and knowing WHY. */
+            if (c->rcx) {
+                __try {
+                    fprintf(stderr, "       this[0x70]=%08X [0x74]=%08X "
+                                    "[0x78]=%08X [0x7c]=%08X\n",
+                            rd32(c->rcx + 0x70), rd32(c->rcx + 0x74),
+                            rd32(c->rcx + 0x78), rd32(c->rcx + 0x7c));
+                } __except (EXCEPTION_EXECUTE_HANDLER) { }
+            }
             if (g_trace_enabled) es3_trace_tail(24);
             return;
         }
@@ -815,9 +827,26 @@ static DWORD WINAPI es3_thread_shim(void *arg)
         return 1;
     }
     c.rcx = ts.param;                 /* the thread parameter, first argument */
-    if (g_trace_files)
-        fprintf(stderr, "[thread] %lu entering guest %#llx\n",
-                GetCurrentThreadId(), (unsigned long long)ts.guest_fn);
+    if (g_trace_files) {
+        /* Which runnable this thread was given, by its vtable.
+         *
+         * FRunnableThread::GuardedRun takes the thread object in RCX and finds
+         * the runnable at [this+0x10], then calls its vtable[0] - Init - before
+         * entering the loop. So a runnable whose Init never runs was never
+         * handed to a thread, and the vtable is the only thing that says WHICH
+         * runnable each thread actually got. Printing it turns "some threads
+         * exist" into a list of which subsystems are running. */
+        uint64_t runnable = 0, vt = 0;
+        __try {
+            runnable = rd64(ts.param + 0x10);
+            if (runnable) vt = rd64(runnable);
+        } __except (EXCEPTION_EXECUTE_HANDLER) { }
+        fprintf(stderr, "[thread] %lu entering guest %#llx  thread=%#llx "
+                        "runnable=%#llx vtable=%#llx\n",
+                GetCurrentThreadId(), (unsigned long long)ts.guest_fn,
+                (unsigned long long)ts.param, (unsigned long long)runnable,
+                (unsigned long long)vt);
+    }
     es3_call_guest(&c, ts.guest_fn);
     if (g_trace_files)
         fprintf(stderr, "[thread] %lu guest %#llx returned %#llx\n",

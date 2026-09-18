@@ -99,6 +99,7 @@ void es3_trace_dump(const char *why);
 void es3_trace_tail(int n);
 void es3_dump_threads(void);
 void es3_dump_callstack(const char *why);
+void es3_todo(uint64_t va, const char *text);
 void es3_install_crash_handler(void);
 
 extern int g_trace_enabled;

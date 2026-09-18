@@ -68,6 +68,28 @@ void es3_trace_dump(const char *why)
     }
 }
 
+/* ---- RECOMP_TODO: an instruction the lifter could not express ----
+ *
+ * cpu64.h defines this as plain abort() so that anything including only the
+ * header still builds. That default is useless in practice: MSVC turns abort()
+ * into __fastfail, which no exception handler sees and no filter can report, so
+ * the process vanishes with 0xC0000409 and not one line of output. This build
+ * spent a run being diagnosed as "it crashed somewhere" for exactly that
+ * reason, after the guest had in fact got FURTHER than ever before.
+ *
+ * The runtime overrides it (see the /D on the generated files) to say which
+ * guest address, which mnemonic, and how it got there.
+ */
+void es3_todo(uint64_t va, const char *text)
+{
+    fprintf(stderr, "\n[TODO] unexpressed instruction at %#llx: %s\n",
+            (unsigned long long)va, text ? text : "?");
+    es3_dump_callstack("at the unexpressed instruction");
+    es3_trace_dump("RECOMP_TODO");
+    fflush(stderr);
+    _exit(4);
+}
+
 void es3_trace_tail(int n)
 {
     /* Straight to stderr, not to the dump file.
