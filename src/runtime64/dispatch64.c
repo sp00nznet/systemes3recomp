@@ -1199,7 +1199,7 @@ void es3_rs_dump(void)
  * in the image CALLS that wrapper - it is reached through a function pointer -
  * so the argument cannot be read off a call site and has to come from
  * instrumenting the wrapper at run time. Which needs a display, because with
- * no adapter UE3 aborts long before any of this runs. */
+ * no adapter UE3 aborts long before any of this runs.
  *
  * Until that is settled the default build keeps the behaviour that is known to
  * work: rendering at 43 fps with 03-01 on screen. */
