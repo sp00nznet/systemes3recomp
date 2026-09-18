@@ -146,6 +146,11 @@ static LONG WINAPI es3_seh(EXCEPTION_POINTERS *ep)
                 "[crash] function instead.\n");
         }
     }
+    /* The lifted call stack, not just the trail. A fault in generated C has no
+     * usable native stack - every frame is L_0001400xxxxx with no symbols - so
+     * the shadow stack is the only thing that says which guest function was
+     * running and who called it. */
+    es3_dump_callstack("at the fault");
     es3_trace_dump(msg);
     return EXCEPTION_EXECUTE_HANDLER;
 }
