@@ -58,6 +58,7 @@ function(es3_runtime target generated_dir)
         "${ES3_RUNTIME_DIR}/dxgi_output.c"
         "${ES3_RUNTIME_DIR}/dxgi_shot.c"
         "${ES3_RUNTIME_DIR}/jvs.c"
+        "${ES3_RUNTIME_DIR}/card.c"
         "${ES3_RUNTIME_DIR}/allnet.c"
         "${ES3_RUNTIME_DIR}/debug.c"
         "${ES3_HYBRID_DIR}/hybrid.c"
@@ -188,8 +189,23 @@ function(es3_runtime64 target generated_dir)
     # hundred translation units of machine-written C, and MSBuild compiles them
     # one at a time by default - the difference is minutes against most of an
     # hour, every time the catalog changes.
+    #
+    # /Od, and deliberately, even in a Release build. Two reasons, and the
+    # second is not a preference:
+    #
+    #   * a fault in optimised generated C reports a host address with no way
+    #     back to a guest one. At /Od the c->rip the lifter maintains per basic
+    #     block still lines up with the code around it, which is the difference
+    #     between "the crash is at 0x1400bb7a0" and no information at all;
+    #   * the same tree built /O2 does not behave the same. Measured on
+    #     2026-09-18: the /Od build reaches attract and renders, and the /O2
+    #     build of the identical generated source dies first with a guest
+    #     RaiseException(1) out of the appErrorf wrapper. That is either
+    #     undefined behaviour in the generated C or an interaction with the
+    #     setjmp landing pads eh64 relies on, and until it is understood /O2 is
+    #     not a supported configuration rather than a faster one.
     target_compile_options(${target} PRIVATE
-        /MP
+        /MP /Od
         /FI"${ES3_RUNTIME64_DIR}/es3_todo.h"
         /W1 /wd4244 /wd4267 /wd4018 /wd4102 /wd4101 /wd4146 /wd4996)
     # No /BASE, no /DYNAMICBASE:NO, no /LARGEADDRESSAWARE, and no /STACK.
