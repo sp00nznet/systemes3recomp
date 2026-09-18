@@ -93,11 +93,47 @@ Generations `6` and `7` are the ones to mint: there are three validators, at
 `0x007ACE40`, `0x007AD183` and `0x007AD3E7`, accepting `0 3 6 7`, `2 5 6 7`
 and `1 4 6 7` respectively, so only 6 and 7 satisfy all three.
 
-What is **not** yet pinned down is the exact byte layout inside the sixteen
-byte field. The offsets in `L_007AE4A0` are read through a stack copy whose
-base moves with several pushes, and guessing them from the listing is how
-mistakes get made. The reliable way is to dump the expanded context from
-`0x009462A8` out of the running game and work against that.
+### The layout, measured
+
+Pinned down by asking the game rather than reading the listing - a walking
+pattern on the card and a hook on the `memcmp` at `0x007CB6AE`, filtered to
+calls whose first argument is the `"NBGIC"` literal. It printed
+`B2 B3 B4 B5 B6 B7`, which is card offset 18 and six **contiguous** bytes.
+
+Worth saying plainly: the listing looks like it reads two separate locals
+(`mov ecx,[esp+0x0E]` and `mov dx,[esp+0x16]`) and this file previously
+concluded the signature was split across the card. It is not. The two locals
+are adjacent pieces of one contiguous field, and only the hook settled it.
+
+So block 1 is the whole card record:
+
+
+
+A hook on `0x007AE1E0` confirmed the halves and the key, printing
+
+
+
+for a card carrying those bytes: **L is the little-endian dword at card[24]**,
+**R the one at card[28]**, and the context is
+`0x009462A8 + 6 * 0x1048` - the generation named on the card.
+
+The plaintext is eight bytes:
+
+
+
+### Minting one
+
+With the contexts dumped out of `0x009462A8` (`ES3_DUMP_BF`), a card is
+arithmetic: build the seven identity bytes, fold the eighth as their XOR,
+Blowfish-**encrypt** the pair of little-endian dwords with the chosen
+generation's context, and write the version word, `NBGIC` + digit, and the
+two ciphertext dwords into block 1.
+
+Generations `6` and `7` are the ones to use: the three validators accept
+`0 3 6 7`, `2 5 6 7` and `1 4 6 7`, so only those two satisfy all three.
+The path a tapped card actually takes is `0x007ACE40`, called from
+`0x007AD9FB` with the reader object at `0x00943548` - measured, not assumed,
+by hooking all three.
 
 `L_007ACDC0` is the second gate: it parses 16 further bytes at `+0x13F` and
 returns `-400` (`0xFFFFFE70`) when they do not parse. The signature path's own

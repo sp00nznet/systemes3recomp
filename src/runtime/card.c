@@ -326,6 +326,58 @@ static void send_frame(const unsigned char *body, unsigned n)
     if (card_trace()) hexline("->", body, n);
 }
 
+/*
+ * The game's own key material, taken out of the game's own memory.
+ *
+ * A card's body is Blowfish, and the game expands one key per card generation
+ * into a context in .data: 0x1048 bytes each - an eighteen dword P-array and
+ * four 256-entry S-boxes, 72 + 4096 - eight of them from 0x009462A8, indexed
+ * by the generation digit. 0x007AE1E0 decrypts with them, walking the P-array
+ * backwards; 0x007AE270 is the schedule that fills them.
+ *
+ * Dumped rather than recomputed because recomputing needs assumptions - how
+ * the 128 byte key in .rdata is fed to the schedule, whether it is byte
+ * reversed, how it wraps - and this file already carries one retracted
+ * conclusion reached by assuming. The expanded contexts are the ground truth:
+ * with them, encrypting a card is arithmetic.
+ *
+ * Written once, on the first poll, by which time the reader's library has
+ * initialised. ES3_DUMP_BF to ask for it.
+ */
+static void dump_blowfish(void)
+{
+    static int done;
+    FILE *f;
+    uint32_t base, i;
+    const uint32_t stride = 0x1048u, n = 8u;
+
+    if (done || !getenv("ES3_DUMP_BF")) return;
+    done = 1;
+
+    base = GVA(0x009462A8u);
+    f = fopen("es3_blowfish.bin", "wb");
+    if (!f) {
+        fprintf(stderr, "[card] ES3_DUMP_BF: cannot write es3_blowfish.bin\n");
+        return;
+    }
+    for (i = 0; i < stride * n; i++) fputc(rd8(base + i), f);
+    fclose(f);
+
+    /* The first P-array word of each context, as a sanity line: eight
+     * contexts that are all zero would mean the schedule has not run yet, and
+     * eight identical ones would mean they are not per-generation. */
+    fprintf(stderr, "[card] ES3_DUMP_BF: %u contexts of %u bytes from %08X "
+                    "-> es3_blowfish.bin\n", n, stride, 0x009462A8u);
+    for (i = 0; i < n; i++) {
+        uint32_t p0 = (uint32_t)rd8(base + i * stride + 0x1000u)
+                    | ((uint32_t)rd8(base + i * stride + 0x1001u) << 8)
+                    | ((uint32_t)rd8(base + i * stride + 0x1002u) << 16)
+                    | ((uint32_t)rd8(base + i * stride + 0x1003u) << 24);
+        fprintf(stderr, "[card]   generation %u: P[0] = %08X\n", i, p0);
+    }
+    fflush(stderr);
+}
+
 /* ---------------------------------------------------------------- PN53x - */
 
 /* Which sector the game last authenticated against. MIFARE only lets a reader
@@ -470,6 +522,7 @@ static void command(const unsigned char *p, unsigned n)
         break;
 
     case 0x4A:                                     /* InListPassiveTarget */
+        dump_blowfish();
         r[0] = 0xD5; r[1] = 0x4B;
         if (!card_in_field()) {
             r[2] = 0x00;                           /* no targets in the field */
