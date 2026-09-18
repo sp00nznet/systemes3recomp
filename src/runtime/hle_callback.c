@@ -1636,6 +1636,12 @@ static int ioboard_descriptor(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
  */
 static const wchar_t k_iob_key[] = L"ES3-SYNTHETIC-NAMCO-IO-BOARD";
 
+/* Declared here because the driver-key answer arms them and the devnode
+ * hooks below read them; see the note by the devnode for why the splice is
+ * armed rather than always on. */
+static int g_iob_node_armed;              /* only during the game's lookup */
+static int g_iob_node_given;              /* one per sibling chain walk */
+
 /* USB_NODE_CONNECTION_DRIVERKEY_NAME: ConnectionIndex, ActualLength, then
  * the name. */
 static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
@@ -1691,6 +1697,9 @@ static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
 
     memcpy((void *)(uintptr_t)(outbuf + 8u), k_iob_key, need);
     if (bytesret) wr32(bytesret, 8u + need);
+    /* The game resolves this key by walking; open the window for that walk. */
+    g_iob_node_armed = 1;
+    g_iob_node_given = 0;
     {
         static int said;
         if (!said) {
@@ -1730,7 +1739,22 @@ static int ioboard_driverkey(uint32_t hub, uint32_t inbuf, uint32_t outbuf,
 #define CR_BUF_SMALL    26u
 
 static uint32_t g_iob_root;               /* what the null lookup returned */
-static int g_iob_node_given;              /* one per sibling chain walk */
+
+/*
+ * The splice is armed, not always on, and that took a regression to learn.
+ *
+ * DirectInput walks the device tree itself to find HID devices. A synthetic
+ * node appended to every sibling chain in the process is therefore handed to
+ * dinput8 as well, which does not survive a node whose properties are mostly
+ * "no such value": with the board switched on, the game enumerated ZERO game
+ * controllers where it had found one before, so turning the board on took all
+ * the input away.
+ *
+ * The game only walks to resolve a driver key it was just given, so that is
+ * the window. Arming on the driver-key fetch and disarming once the node's
+ * key has been read keeps the extra node inside the game's own lookup, where
+ * it is wanted, and out of everyone else's.
+ */
 
 /* Does the board exist to be found at all? Only if a port was claimed. */
 static int ioboard_has_node(void)
@@ -1764,8 +1788,8 @@ static void hle_cm_get_sibling(CPU *c, HleId id)
     hle_call_native(c, id);
 
     /* The chain ended. Append the board rather than letting the walk stop. */
-    if (ioboard_has_node() && c->eax != CR_SUCCESS && out &&
-        !g_iob_node_given) {
+    if (ioboard_has_node() && g_iob_node_armed && c->eax != CR_SUCCESS &&
+        out && !g_iob_node_given) {
         g_iob_node_given = 1;
         wr32(out, IOB_DEVNODE);
         c->eax = CR_SUCCESS;
@@ -1828,6 +1852,7 @@ static void hle_cm_get_devnode_prop(CPU *c, HleId id)
         }
         memcpy((void *)(uintptr_t)buf, k_iob_key, need);
         wr32(plen, need);
+        g_iob_node_armed = 0;             /* consumed: close the window */
         CM_RET(c, CR_SUCCESS, 6);
         return;
     }
@@ -1896,10 +1921,7 @@ static void hle_cm_locate_devnode(CPU *c, HleId id)
      * second pass finds the board too; arming it anywhere else would hand
      * the same node out twice inside one chain.
      */
-    if (!name && c->eax == CR_SUCCESS && out) {
-        g_iob_root = rd32(out);
-        g_iob_node_given = 0;
-    }
+    if (!name && c->eax == CR_SUCCESS && out) g_iob_root = rd32(out);
 }
 
 static void hle_device_io_control(CPU *c, HleId id)
