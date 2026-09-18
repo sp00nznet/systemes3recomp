@@ -197,9 +197,18 @@ endfunction()
 # the parts that do not need a game - the dispatch table, the import sentinel
 # range, and the purge table. guest_load() is covered by the first real title.
 enable_testing()
-add_executable(es3_rt_selftest tests/selftest/selftest.c)
-es3_runtime(es3_rt_selftest "${CMAKE_CURRENT_SOURCE_DIR}/tests/selftest")
-add_test(NAME es3_rt_selftest COMMAND es3_rt_selftest)
+# 32-bit only, and guarded rather than left to fail: es3_runtime() aborts the
+# configure on a 64-bit host, so without this a Win64 game project could not
+# even configure - the toolkit would stop it before reaching its own target.
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    add_executable(es3_rt_selftest tests/selftest/selftest.c)
+    es3_runtime(es3_rt_selftest "${CMAKE_CURRENT_SOURCE_DIR}/tests/selftest")
+    add_test(NAME es3_rt_selftest COMMAND es3_rt_selftest)
+else()
+    message(STATUS
+        "systemes3recomp: 64-bit configure, skipping the 32-bit runtime "
+        "self-check. Configure with -A Win32 to run it.")
+endif()
 
 # pcrecomp's own x87 boundary check, built here because this is the project
 # that needs it: an ES3 title imports nine of MSVC's `_CI*` helpers, which pass
