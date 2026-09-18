@@ -1089,11 +1089,147 @@ static const wchar_t *k_rs_mutex[6] = {
     L"RSMutexDongleInfo", L"RSMutexRanking", L"RSMutexWebCam",
 };
 
-size_t g_rs_size = 0x10000;
+/* Big enough for the largest offset the game touches, which is the webcam
+ * frame: it memcpys 0x12C000 bytes - 640*480*4 - to view+0x2228, so the block
+ * has to be at least 0x12E228. The smaller offsets in use are view+0 (0x1B4
+ * bytes, read AND written), view+0x1B4 (0x8C, read), view+0x240, view+0x268
+ * (0x84, written) and view+0x2EC (0x1F3C, both ways). 2 MB covers all of it
+ * with room for whatever has not been found yet; the game maps the whole
+ * object, so the size is the runtime's to choose. */
+size_t g_rs_size = 0x200000;
+
+/* --rs-fill: what an unknown field should look like. The block is the cabinet
+ * service's, its layout is not yet worked out, and "all zeroes" is a guess
+ * like any other - being able to try another one costs a byte. */
+int g_rs_fill = 0;
+int g_rs_dump_on = 0;
+
+void es3_rs_dump(void)
+{
+    const unsigned char *p = (const unsigned char *)g_rs_view;
+    if (!p) return;
+    fprintf(stderr, "[rs] block, first 0x300 bytes (what the game published):\n");
+    for (unsigned o = 0; o < 0x300; o += 16) {
+        unsigned z = 1;
+        for (unsigned i = 0; i < 16; i++) if (p[o + i]) z = 0;
+        if (z) continue;                       /* zero rows say nothing */
+        fprintf(stderr, "   %04X ", o);
+        for (unsigned i = 0; i < 16; i++) fprintf(stderr, "%02X ", p[o + i]);
+        fprintf(stderr, " ");
+        for (unsigned i = 0; i < 16; i++)
+            fprintf(stderr, "%c", (p[o + i] >= 32 && p[o + i] < 127) ? p[o + i] : '.');
+        fprintf(stderr, "\n");
+    }
+}
+
+/* ---- the I/O library, answered at its own API ----
+ *
+ * The lesson from lindberghrecomp's hle_sega.c, which solves the same problem
+ * one cabinet over: a game does not talk to its I/O hardware, it calls the
+ * cabinet library, and the thing to answer is the LIBRARY. Lindbergh overrides
+ * SEGA's amLib by symbol name; here the equivalent library is statically
+ * linked into the executable, so the same job is done by intercepting three
+ * of its functions at their guest addresses.
+ *
+ *   0x1400037B0  state    - a busy byte, then a state word mapped
+ *                           0->-1, 1->0, 2->1, 3->2, 4->3. Negative is what
+ *                           becomes 03-01 I/O PCB ERROR.
+ *   0x1400037F0  count    - how many JVS nodes are on the bus
+ *   0x140003800  node(i)  - &node[i] in a table of four 0x2EC-byte records
+ *
+ * The game checks the board's identity by memcmp of the first 42 bytes of
+ * node 1 against a string in its own .rdata, exactly as the Lindbergh game
+ * checks the reply to JVS command 0x10 - so that string is what node 1 has to
+ * start with, and it is read out of the image rather than typed here.
+ *
+ * Reading the analog channels at node+0x28A onwards is next; a pod is not a
+ * kart and nothing is wired to an input yet.
+ */
+#define IO_NODE_STRIDE 0x2ec
+#define IO_NODE_COUNT  4
+#define IO_IDENT_VA    0x1412AD958ull   /* "namco ltd.;NA-JV;Ver4.00;..." */
+#define IO_IDENT_LEN   0x2a
+
+static unsigned char g_io_node[IO_NODE_COUNT][IO_NODE_STRIDE];
+/* OFF by default, and that is a statement about how finished it is rather
+ * than caution. With the board answered the game stops drawing the error
+ * and stops reaching its render loop at all - it goes looking for board
+ * DATA next, and the records here are static, so whatever it waits for
+ * never arrives. Until that is done, the default build keeps the
+ * behaviour that is known to work. --io-board turns it on. */
+int g_io_board = 0;
+
+static void io_board_init(void)
+{
+    static int done;
+    if (done) return;
+    done = 1;
+    memset(g_io_node, 0, sizeof g_io_node);
+    for (int i = 0; i < IO_NODE_COUNT; i++)
+        memcpy(g_io_node[i], (const void *)(uintptr_t)GVA(IO_IDENT_VA),
+               IO_IDENT_LEN);
+    fprintf(stderr, "[io] board present, %d nodes, ident \"%.42s\"\n",
+            IO_NODE_COUNT, (const char *)g_io_node[0]);
+}
+
+/* Returns 1 if this guest address was answered here instead of being run. */
+static int io_board_call(CPU *c, uint64_t va)
+{
+    if (!g_io_board) return 0;
+    switch (va) {
+    case 0x1400037B0ull:                /* state: 0 is "connected and idle" */
+        io_board_init();
+        c->rax = 0;
+        return 1;
+    case 0x1400037F0ull:                /* node count */
+        c->rax = IO_NODE_COUNT;
+        return 1;
+    case 0x140003800ull: {              /* &node[ecx] */
+        uint32_t i = (uint32_t)c->rcx;
+        io_board_init();
+        c->rax = i < IO_NODE_COUNT ? (uint64_t)(uintptr_t)g_io_node[i] : 0;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* --rs-poke: a PROBE, not a fix.
+ *
+ * The I/O library keeps a "board present" byte at 0x141F2E334. Its accessor at
+ * 0x1400037B0 is two instructions - compare it with zero, and return -2 if it
+ * is zero - and -2 is what becomes 03-01 I/O PCB ERROR. In the whole image
+ * that byte is written exactly once, to ZERO, by the library's init at
+ * 0x1400023B6; whatever sets it on a real cabinet does so through a pointer,
+ * and has not been found yet.
+ *
+ * Holding it at 1 from outside answers one question and only one: whether that
+ * byte really is the thing 03-01 is about. If the error clears, the semantics
+ * are confirmed and the honest version is to find the path that sets it and
+ * feed that. If it does not, the search moves on. It is off by default and it
+ * does not belong in a working build.
+ */
+int g_rs_poke;
+
+static DWORD WINAPI rs_poke_thread(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        wr8(GVA(0x141F2E334ull), 1);
+        Sleep(50);
+    }
+}
 
 void es3_rs_service(void)
 {
     if (g_rs_map) return;
+    if (g_rs_poke) {
+        HANDLE t = CreateThread(NULL, 0, rs_poke_thread, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+        fprintf(stderr, "[rs] PROBE: holding the I/O present byte at "
+                        "0x141F2E334 set - this is a diagnostic, not a fix\n");
+    }
     g_rs_map = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
                                   0, (DWORD)g_rs_size, L"RSSharedData");
     if (!g_rs_map) {
@@ -1133,6 +1269,8 @@ void dispatch(CPU *c, uint64_t target)
     check_limit();
     uint64_t pref = to_preferred(target);
     tc_bump(pref);
+    /* The cabinet library, answered rather than run - see io_board_call. */
+    if (io_board_call(c, pref)) return;
     void (*fn)(CPU *) = lookup(pref);
     if (fn) {
         CPU *prev_cpu = g_cur_cpu;

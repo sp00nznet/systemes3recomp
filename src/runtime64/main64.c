@@ -46,6 +46,12 @@ int main(int argc, char **argv)
             g_watch_alloc = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc)
             g_capture_frame = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--io-board"))
+            g_io_board = 1;
+        else if (!strcmp(argv[i], "--rs-poke"))
+            g_rs_poke = 1;
+        else if (!strcmp(argv[i], "--rs-dump"))
+            g_rs_dump_on = 1;
         else if (!strcmp(argv[i], "--log-imports"))
             g_log_imports = 1;
         else if (!strcmp(argv[i], "--eh-trace"))
