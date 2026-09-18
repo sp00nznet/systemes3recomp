@@ -164,6 +164,8 @@ typedef long (__stdcall *pfn_savesurface)(const char *, int, void *,
 typedef unsigned long (__stdcall *pfn_release)(void *);
 
 unsigned long long g_capture_frame;
+unsigned long long g_capture_every;
+unsigned long long g_capture_max = 12;
 
 static void capture_backbuffer(void *dev, unsigned long long n)
 {
@@ -198,11 +200,17 @@ static long __stdcall hook_present(void *dev, const void *a, const void *b,
                                    void *c, const void *d)
 {
     long hr;
+    unsigned long long n = g_present_count + 1;
     /* Before the flip: afterwards the back buffer is whatever the driver
      * handed back, which on some drivers is the frame before last and on
      * others is undefined. */
-    if (g_capture_frame && g_present_count + 1 == g_capture_frame)
+    if (g_capture_frame && n == g_capture_frame)
         capture_backbuffer(dev, g_capture_frame);
+    /* A sequence, for something that moves. One frame proves the renderer
+     * works; an attract loop needs several to show what it is. */
+    if (g_capture_every && n % g_capture_every == 0 &&
+        n / g_capture_every <= g_capture_max)
+        capture_backbuffer(dev, n);
     hr = orig_present(dev, a, b, c, d);
     /* Logged on a curve, not every frame: the point is that the number keeps
      * going up, and one line per frame buries everything else. */

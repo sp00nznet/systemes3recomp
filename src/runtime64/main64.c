@@ -44,6 +44,10 @@ int main(int argc, char **argv)
             g_watch_reader = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--watch-alloc") && i + 1 < argc)
             g_watch_alloc = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--capture-every") && i + 1 < argc)
+            g_capture_every = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--capture-max") && i + 1 < argc)
+            g_capture_max = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc)
             g_capture_frame = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--io-board"))

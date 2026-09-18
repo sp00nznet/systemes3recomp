@@ -158,6 +158,8 @@ void es3_d3d9_watch(void *d3d9);
 const char *es3_session_state(void);
 extern unsigned long long g_present_count;
 extern unsigned long long g_capture_frame;
+extern unsigned long long g_capture_every;
+extern unsigned long long g_capture_max;
 
 extern const char *g_find_string;
 void es3_find_string(void);

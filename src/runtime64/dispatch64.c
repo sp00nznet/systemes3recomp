@@ -1226,7 +1226,18 @@ static void io_board_prime(void)
     static int said;
     uint64_t base;
 
-    wr32(GVA(0x141F2E310ull), 1);      /* state 1 -> "connected" */
+    /* State 2, not 1. The accessor maps the state word 0->-1, 1->0, 2->1,
+     * 3->2, 4->3, and the poll at 0x1409E1808 treats that result as:
+     *
+     *   < 0   the board answered with an error   -> 03-01 at once
+     *   == 0  nothing yet, keep waiting          -> 03-01 when the deadline
+     *                                               at 0x1409E1853 passes
+     *   > 0   the board is up                    -> check the node count
+     *
+     * So state 1 - which reads as "connected" and returns 0 - is the WAITING
+     * answer, and the game sat in the timeout branch for a few seconds and
+     * then reported the board missing anyway. It needs a positive one. */
+    wr32(GVA(0x141F2E310ull), 2);      /* -> the accessor returns 1 */
     wr8 (GVA(0x141F2E334ull), 0);      /* not busy */
     wr32(GVA(0x141F2E338ull), 1);      /* one node on the bus */
 
@@ -1254,14 +1265,37 @@ static void io_board_prime(void)
     }
 }
 
-/* Returns 1 if this address was answered here. Always 0 now: the accessors run
- * their own code, they just find the data already true. */
+/* Held continuously, not just on the accessors.
+ *
+ * Priming only when one of the three accessors is dispatched assumes those are
+ * the only readers, and they are not: seventy-odd sites read the library's
+ * globals directly, the library's own init zeroes them after it runs, and the
+ * error latches - a cabinet clears 03-01 with the test switch, so a board that
+ * is missing for one poll stays reported as missing. A thread that keeps the
+ * state true removes all of that from the question, which is the point: it
+ * answers whether these globals are the whole story before any effort goes
+ * into holding them correctly at exactly the right moments. */
+static DWORD WINAPI io_board_thread(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        io_board_prime();
+        Sleep(50);
+    }
+}
+
 static int io_board_call(CPU *c, uint64_t va)
 {
     (void)c;
     if (!g_io_board) return 0;
-    if (va == 0x1400037B0ull || va == 0x1400037F0ull || va == 0x140003800ull)
+    if (va == 0x1400037B0ull || va == 0x1400037F0ull || va == 0x140003800ull) {
+        static long started;
         io_board_prime();
+        if (InterlockedExchange(&started, 1) == 0) {
+            HANDLE t = CreateThread(NULL, 0, io_board_thread, NULL, 0, NULL);
+            if (t) CloseHandle(t);
+        }
+    }
     return 0;
 }
 
@@ -1288,6 +1322,22 @@ static DWORD WINAPI rs_poke_thread(void *unused)
     for (;;) {
         wr8(GVA(0x141F2E334ull), 1);
         Sleep(50);
+    }
+}
+
+/* --rs-dump: what the GAME writes into the block.
+ *
+ * The block is shared both ways - the service publishes machine state and the
+ * game publishes its own - so what the game leaves in it is a free map of the
+ * parts of the structure it understands, without reverse-engineering a single
+ * field. Once a minute, because the interesting change is between "just
+ * started" and "settled". */
+static DWORD WINAPI rs_dump_thread(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        Sleep(60000);
+        es3_rs_dump();
     }
 }
 
@@ -1318,6 +1368,10 @@ void es3_rs_service(void)
     fprintf(stderr, "[rs] published RSSharedData (%llu bytes at %p) and %d "
                     "mutexes\n",
             (unsigned long long)g_rs_size, g_rs_view, 6);
+    if (g_rs_dump_on) {
+        HANDLE t = CreateThread(NULL, 0, rs_dump_thread, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
 }
 
 /* ---- the entry points the lifted code calls ---- */
