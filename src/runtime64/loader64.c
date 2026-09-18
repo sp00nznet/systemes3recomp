@@ -25,6 +25,7 @@ typedef struct {
     uint64_t addr;          /* the real function address */
     char     dll[32];
     char     name[96];
+    int      seen;          /* --log-imports: reported once */
 } import_rec_t;
 
 static import_rec_t *g_imports;
@@ -34,6 +35,9 @@ static int g_nimports;
  * at load time so the check in es3_native_call is a pointer compare. */
 uint64_t g_addr_RaiseException;
 uint64_t g_addr_CxxThrowException;
+uint64_t g_addr_OpenFileMappingW, g_addr_LoadLibraryW, g_addr_LoadLibraryA;
+uint64_t g_addr_SetupDiGetClassDevsW, g_addr_SetupDiEnumDeviceInterfaces;
+uint64_t g_addr_CM_Locate_DevNodeW;
 uint64_t g_addr_hasp_login, g_addr_hasp_logout;
 uint64_t g_addr_hasp_read, g_addr_hasp_decrypt;
 uint64_t g_addr_initterm;
@@ -73,9 +77,44 @@ static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     { "GetFileSize",    &g_addr_GetFileSize   },
     { "GetFileSizeEx",  &g_addr_GetFileSizeEx },
     { "scalable_malloc", &g_addr_scalable_malloc },
+    /* The I/O board hunt. Battle Pods does not open a port by name the way the
+     * 32-bit titles do - it enumerates, finds nothing, and reports 03-01
+     * without ever reaching a CreateFile. These name what it was looking for. */
+    { "OpenFileMappingW",  &g_addr_OpenFileMappingW },
+    { "LoadLibraryW",      &g_addr_LoadLibraryW },
+    { "LoadLibraryA",      &g_addr_LoadLibraryA },
+    { "SetupDiGetClassDevsW",   &g_addr_SetupDiGetClassDevsW },
+    { "SetupDiEnumDeviceInterfaces", &g_addr_SetupDiEnumDeviceInterfaces },
+    { "CM_Locate_DevNodeW",     &g_addr_CM_Locate_DevNodeW },
     { "DirectInput8Create", &g_addr_DirectInput8Create },
     { "Direct3DCreate9", &g_addr_Direct3DCreate9 },
 };
+
+/* --log-imports: one line the first time each import is called.
+ *
+ * "Which DLL functions does this game actually use" is a question the import
+ * table cannot answer - a PE lists what it might call, not what it does - and
+ * it is the fastest way to find the path a subsystem takes when the obvious
+ * one turns out to be unused. Battle Pods imports nine setupapi functions and
+ * calls none of them, which took a whole build cycle to establish and one line
+ * here to see.
+ *
+ * First call only, not a count: the list is bounded by the import table, it
+ * survives killing the process, and a counter would need somewhere to print. */
+int g_log_imports;
+
+void es3_note_import(uint64_t addr)
+{
+    if (!g_log_imports) return;
+    for (int i = 0; i < g_nimports; i++) {
+        if (g_imports[i].addr != addr) continue;
+        if (!g_imports[i].seen) {
+            g_imports[i].seen = 1;
+            fprintf(stderr, "[imp] %s!%s\n", g_imports[i].dll, g_imports[i].name);
+        }
+        return;
+    }
+}
 
 const char *es3_import_name(uint64_t addr)
 {

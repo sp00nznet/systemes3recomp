@@ -46,6 +46,8 @@ int main(int argc, char **argv)
             g_watch_alloc = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc)
             g_capture_frame = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--log-imports"))
+            g_log_imports = 1;
         else if (!strcmp(argv[i], "--eh-trace"))
             g_eh_trace = 1;
         else if (!strcmp(argv[i], "--find-string") && i + 1 < argc)
@@ -78,6 +80,10 @@ int main(int argc, char **argv)
     es3_set_guest_cmdline(exe, game_args);
 
     if (!es3_load_image(exe)) return 1;
+
+    /* Before the guest runs: it opens the cabinet service's shared block
+     * during startup and reports the I/O board missing if it is not there. */
+    es3_rs_service();
 
     uint64_t sp = es3_alloc_stack(GUEST_STACK);
     if (!sp) { fprintf(stderr, "[main] no guest stack\n"); return 1; }

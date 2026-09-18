@@ -63,9 +63,22 @@ int  es3_native_call(CPU *c, uint64_t target);
 /* Diagnostics: the name behind a native address, or NULL. */
 const char *es3_import_name(uint64_t addr);
 
+/* --log-imports: one line the first time each import is really called. */
+extern int g_log_imports;
+void es3_note_import(uint64_t addr);
+
 /* Imports the runtime intervenes in; resolved at load time. */
 extern uint64_t g_addr_RaiseException;
 extern uint64_t g_addr_CxxThrowException;
+/* The cabinet service: RSSharedData and its six mutexes. See dispatch64.c. */
+void es3_rs_service(void);
+extern size_t g_rs_size;
+
+/* Device enumeration, which is how this title looks for its I/O board. */
+extern uint64_t g_addr_OpenFileMappingW, g_addr_LoadLibraryW, g_addr_LoadLibraryA;
+extern uint64_t g_addr_SetupDiGetClassDevsW, g_addr_SetupDiEnumDeviceInterfaces;
+extern uint64_t g_addr_CM_Locate_DevNodeW;
+
 /* The Sentinel dongle, imported by ordinal - see the note in dispatch64.c. */
 extern uint64_t g_addr_hasp_login, g_addr_hasp_logout;
 extern uint64_t g_addr_hasp_read, g_addr_hasp_decrypt;

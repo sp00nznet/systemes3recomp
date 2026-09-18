@@ -405,6 +405,8 @@ int es3_native_call(CPU *c, uint64_t target)
     uint64_t gsp = c->rsp;
     c->rsp = gsp + 8;
 
+    if (g_log_imports) es3_note_import(target);
+
     /* ---- RaiseException(0x406D1388): the thread-name notification ----
      *
      * This is not a failure, it is a message to a debugger, and the standard
@@ -777,6 +779,69 @@ int es3_native_call(CPU *c, uint64_t target)
         es3_d3d9_watch((void *)(uintptr_t)f.rax_out);
     }
 
+    /* OpenFileMappingW, with no CreateFileMapping anywhere in the run: the game
+     * expects something ELSE to have made this. On a cabinet that something is
+     * the I/O service, and the name it asks for is the name to answer to. */
+    if (g_addr_OpenFileMappingW && target == g_addr_OpenFileMappingW) {
+        const wchar_t *nm = (const wchar_t *)(uintptr_t)f.r8;
+        fprintf(stderr, "[io] OpenFileMappingW \"%ls\" -> %#llx%s\n",
+                nm ? nm : L"(null)", (unsigned long long)f.rax_out,
+                f.rax_out ? "" : "   NOT PRESENT");
+    }
+    if (g_addr_LoadLibraryW && target == g_addr_LoadLibraryW)
+        fprintf(stderr, "[io] LoadLibraryW \"%ls\" -> %#llx\n",
+                (const wchar_t *)(uintptr_t)f.rcx,
+                (unsigned long long)f.rax_out);
+    if (g_addr_LoadLibraryA && target == g_addr_LoadLibraryA)
+        fprintf(stderr, "[io] LoadLibraryA \"%s\" -> %#llx\n",
+                (const char *)(uintptr_t)f.rcx,
+                (unsigned long long)f.rax_out);
+
+    /* ---- the I/O board hunt ----
+     *
+     * 03-01 I/O PCB ERROR is raised without the game ever opening a port, so
+     * whatever it is looking for it does not find during enumeration. These
+     * name it: the device class it asks Windows for, the interface GUID it
+     * matches against, and the device instance id it tries to locate directly.
+     * Reported rather than answered, because answering the wrong device is
+     * worse than answering none - see the note in the 32-bit jvs.c about the
+     * card reader. */
+    if (g_addr_SetupDiGetClassDevsW && target == g_addr_SetupDiGetClassDevsW) {
+        const unsigned char *g = (const unsigned char *)(uintptr_t)f.rcx;
+        const wchar_t *en = (const wchar_t *)(uintptr_t)f.rdx;
+        if (g)
+            fprintf(stderr, "[io] SetupDiGetClassDevsW class "
+                    "{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}"
+                    " enum=%ls flags=%#lx -> %#llx\n",
+                    *(const unsigned long *)g, *(const unsigned short *)(g + 4),
+                    *(const unsigned short *)(g + 6),
+                    g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15],
+                    en ? en : L"(any)", (unsigned long)f.r9,
+                    (unsigned long long)f.rax_out);
+        else
+            fprintf(stderr, "[io] SetupDiGetClassDevsW class=(null) enum=%ls "
+                    "flags=%#lx -> %#llx\n", en ? en : L"(any)",
+                    (unsigned long)f.r9, (unsigned long long)f.rax_out);
+    }
+    if (g_addr_CM_Locate_DevNodeW && target == g_addr_CM_Locate_DevNodeW) {
+        const wchar_t *id = (const wchar_t *)(uintptr_t)f.rdx;
+        fprintf(stderr, "[io] CM_Locate_DevNodeW \"%ls\" -> %lu%s\n",
+                id ? id : L"(root)", (unsigned long)f.rax_out,
+                f.rax_out ? "  NOT FOUND" : "");
+    }
+    if (g_addr_SetupDiEnumDeviceInterfaces &&
+        target == g_addr_SetupDiEnumDeviceInterfaces) {
+        const unsigned char *g = (const unsigned char *)(uintptr_t)f.r8;
+        if (g)
+            fprintf(stderr, "[io] SetupDiEnumDeviceInterfaces #%lu iface "
+                    "{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X} -> %s\n",
+                    (unsigned long)f.r9,
+                    *(const unsigned long *)g, *(const unsigned short *)(g + 4),
+                    *(const unsigned short *)(g + 6),
+                    g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15],
+                    f.rax_out ? "TRUE" : "FALSE");
+    }
+
     /* CreateFile* returns the handle the later WriteFile will name. */
     if (g_trace_files &&
         (target == g_addr_CreateFileW || target == g_addr_CreateFileA)) {
@@ -992,6 +1057,61 @@ static DWORD WINAPI es3_thread_shim(void *arg)
                 GetCurrentThreadId(), (unsigned long long)ts.guest_fn,
                 (unsigned long long)c.rax);
     return (DWORD)c.rax;
+}
+
+/* ---- the cabinet service ----
+ *
+ * 03-01 I/O PCB ERROR does not come from talking to hardware. This title never
+ * opens a port and never enumerates a device - of the nine setupapi functions
+ * it imports it calls none. What it does is:
+ *
+ *   OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"RSSharedData")
+ *   MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, 0)      <- size 0: all of it
+ *   CreateMutexW(... L"RSMutexCredits") and five more
+ *
+ * so the I/O board, the credits, the dongle info, the ranking and the webcam
+ * all reach the game as one block of shared memory published by the cabinet's
+ * own service process. On a desktop nothing publishes it, OpenFileMapping
+ * fails, and the game reports the board missing.
+ *
+ * So publish it. The size is ours to choose because the game maps zero bytes,
+ * meaning the whole object; the CONTENTS are not yet known - working out which
+ * field the I/O status lives in is the next job - but a block that exists and
+ * a set of mutexes that can be taken is the difference between "the service is
+ * not there" and "the service is there and says X", and only the second can be
+ * debugged.
+ */
+static HANDLE g_rs_map, g_rs_mutex[6];
+static void  *g_rs_view;
+
+static const wchar_t *k_rs_mutex[6] = {
+    L"RSMutexCredits", L"RSMutexSystem",     L"RSMutexGameState",
+    L"RSMutexDongleInfo", L"RSMutexRanking", L"RSMutexWebCam",
+};
+
+size_t g_rs_size = 0x10000;
+
+void es3_rs_service(void)
+{
+    if (g_rs_map) return;
+    g_rs_map = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                  0, (DWORD)g_rs_size, L"RSSharedData");
+    if (!g_rs_map) {
+        fprintf(stderr, "[rs] CreateFileMappingW(RSSharedData) failed (%lu)\n",
+                GetLastError());
+        return;
+    }
+    g_rs_view = MapViewOfFile(g_rs_map, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    if (g_rs_view) memset(g_rs_view, 0, g_rs_size);
+    for (int i = 0; i < 6; i++) {
+        g_rs_mutex[i] = CreateMutexW(NULL, FALSE, k_rs_mutex[i]);
+        if (!g_rs_mutex[i])
+            fprintf(stderr, "[rs] CreateMutexW(%ls) failed (%lu)\n",
+                    k_rs_mutex[i], GetLastError());
+    }
+    fprintf(stderr, "[rs] published RSSharedData (%llu bytes at %p) and %d "
+                    "mutexes\n",
+            (unsigned long long)g_rs_size, g_rs_view, 6);
 }
 
 /* ---- the entry points the lifted code calls ---- */
