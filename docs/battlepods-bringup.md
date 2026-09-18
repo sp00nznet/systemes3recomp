@@ -176,6 +176,17 @@ Recorded because each one cost a day and each one was convincing.
   the guest decompresses it in lifted code, which made a lifter bug the obvious
   suspect. Inflating the package independently with python-lzo and comparing
   ruled it out: all 155,615,758 bytes are right.
+* **"The optimiser broke it."** A CMake build died early with a guest
+  `RaiseException(1)`; the working build used `/Od` and that one used `/O2`, so
+  the flag was the obvious suspect and it got written down as a finding.
+  Rebuilding at `/Od` died the same way, and so did the binary that had run
+  twenty minutes earlier. `Direct3DCreate9` had started reporting **zero
+  adapters** - the display device on this machine comes and goes - and UE3
+  raises a fatal error on that before it loads a single package, which in the
+  log looks nothing like a display problem. Three builds, one environment, and
+  a build flag took the blame. `[d3d9] N adapter(s)` is printed every run now,
+  and a run reporting zero should be thrown away rather than diagnosed.
+
 * **"The frames are the UnrealScript VM, so this is config."** Two of the
   frames referenced `.ini` and `GetConfigName`, which said `LoadConfig`. That
   attribution came from disassembling a fixed number of bytes per frame and
