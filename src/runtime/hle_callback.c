@@ -870,6 +870,56 @@ static void card_dump(int port, const char *dir, uint32_t buf, uint32_t n)
     fflush(stderr);
 }
 
+/*
+ * A serial port that only has to open.
+ *
+ * System ES3 puts the JVS I/O board on COM3 - OpenParrot's ES3 titles all
+ * hook "COM3" for it, and this game opens COM1, COM3 and COM4, which is the
+ * drive board, the I/O board and the card reader. jvs.c has been answering
+ * COM1 since it was written: the drive board, in a protocol it does not
+ * speak. That is why its frames look nothing like JVS - FF FF FF 01 ... with
+ * no E0 sync anywhere - and why the wheel never arrives.
+ *
+ * Moving jvs.c to COM3 is the fix, but releasing COM1 stalls the boot at the
+ * system menu, because the game needs the drive board's port to OPEN even
+ * when it has nothing useful to say. So: a handle that exists, accepts
+ * writes, and returns nothing. Not an emulated drive board - a port that is
+ * there, which is all the boot asks of it.
+ *
+ * ES3_DRIVE_STUB=<n> claims COM<n> this way, and pairs with ES3_JVS_PORT=3.
+ */
+static HANDLE g_drive_stub;
+
+static uint32_t drive_stub_open(const char *name)
+{
+    const char *want = getenv("ES3_DRIVE_STUB");
+    const char *p = name;
+    int n;
+
+    if (!want) return 0;
+    if (p[0] == '\\' && p[1] == '\\' && p[2] == '.' && p[3] == '\\') p += 4;
+    if (!((p[0] == 'C' || p[0] == 'c') && (p[1] == 'O' || p[1] == 'o') &&
+          (p[2] == 'M' || p[2] == 'm') && p[3] >= '0' && p[3] <= '9'))
+        return 0;
+    n = p[3] - '0';
+    if (p[4] >= '0' && p[4] <= '9') n = n * 10 + (p[4] - '0');
+    if (n != atoi(want)) return 0;
+
+    if (!g_drive_stub) {
+        g_drive_stub = CreateEventW(NULL, TRUE, FALSE, NULL);
+        fprintf(stderr, "[jvs] ES3_DRIVE_STUB: holding %s open and silent, so "
+                        "the boot has a drive board port without this runtime "
+                        "pretending to be one\n", name);
+        fflush(stderr);
+    }
+    return (uint32_t)(uintptr_t)g_drive_stub;
+}
+
+static int is_drive_stub(uint32_t h)
+{
+    return g_drive_stub && h && (HANDLE)(uintptr_t)h == g_drive_stub;
+}
+
 static void hle_create_file(CPU *c, HleId id)
 {
     static int off = -1;
@@ -908,6 +958,10 @@ static void hle_create_file(CPU *c, HleId id)
     h = name ? es3_card_open(name) : 0;
     if (h) { SetLastError(0); JVS_RET(c, h, 7); return; }
 
+    /* And a port that only has to exist - see drive_stub_open(). */
+    h = name ? drive_stub_open(name) : 0;
+    if (h) { SetLastError(0); JVS_RET(c, h, 7); return; }
+
     /* ES3_TRACE_FILES: every distinct path the game opens, once each, with
      * whether it got a handle. "Does the game read this file at all" is the
      * first question whenever editing one of its files changes nothing, and
@@ -937,7 +991,8 @@ static void hle_create_file(CPU *c, HleId id)
  * property of a wire this board does not have. */
 static void comm_ok(CPU *c, HleId id, int argc)
 {
-    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0)) ||
+        is_drive_stub(A32(0))) {
         es3_jvs_note(hle_name(id), A32(1), A32(2));
         SetLastError(0); JVS_RET(c, 1, argc); return;
     }
@@ -965,7 +1020,8 @@ static void hle_cancel_io_ex(CPU *c, HleId id)
  * the size field right is coherent; the game overwrites both immediately. */
 static void hle_get_comm_state(CPU *c, HleId id)
 {
-    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0)) ||
+        is_drive_stub(A32(0))) {
         uint32_t dcb = A32(1);
         if (dcb) { memset((void *)(uintptr_t)dcb, 0, 28); wr32(dcb, 28); }
         SetLastError(0);
@@ -977,7 +1033,8 @@ static void hle_get_comm_state(CPU *c, HleId id)
 
 static void hle_get_comm_timeouts(CPU *c, HleId id)
 {
-    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0)) ||
+        is_drive_stub(A32(0))) {
         uint32_t t = A32(1);
         if (t) memset((void *)(uintptr_t)t, 0, 20);
         SetLastError(0);
@@ -991,7 +1048,8 @@ static void hle_get_comm_timeouts(CPU *c, HleId id)
  * looks at this to decide whether the line is alive. */
 static void hle_get_comm_modem_status(CPU *c, HleId id)
 {
-    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) {
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0)) ||
+        is_drive_stub(A32(0))) {
         uint32_t p = A32(1);
         if (p) wr32(p, 0x0020);            /* MS_DSR_ON */
         SetLastError(0);
@@ -1067,6 +1125,13 @@ static void hle_write_file(CPU *c, HleId id)
         JVS_RET(c, 1, 5);
         return;
     }
+    if (is_drive_stub(A32(0))) {
+        uint32_t n = A32(2), written = A32(3);
+        if (written) wr32(written, n);      /* swallowed, not answered */
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
     if (es3_card_is_port(A32(0))) {
         uint32_t n = A32(2), written = A32(3);
         card_note_caller(c);
@@ -1127,6 +1192,13 @@ static void hle_read_file(CPU *c, HleId id)
         JVS_RET(c, 1, 5);
         return;
     }
+    if (is_drive_stub(A32(0))) {
+        uint32_t read2 = A32(3);
+        if (read2) wr32(read2, 0);          /* nothing ever arrives */
+        SetLastError(0);
+        JVS_RET(c, 1, 5);
+        return;
+    }
     if (es3_card_is_port(A32(0))) {
         uint32_t got = es3_card_read(A32(1), A32(2)), read2 = A32(3);
         if (read2) wr32(read2, got);
@@ -1168,7 +1240,8 @@ static void hle_close_handle(CPU *c, HleId id)
 {
     /* Keep the port: the game closes and reopens it when it decides the board
      * is not answering, and a handle that went away would fail the reopen. */
-    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0))) { SetLastError(0); JVS_RET(c, 1, 1); return; }
+    if (es3_jvs_is_port(A32(0)) || es3_card_is_port(A32(0)) ||
+        is_drive_stub(A32(0))) { SetLastError(0); JVS_RET(c, 1, 1); return; }
     hle_call_native(c, id);
 }
 
