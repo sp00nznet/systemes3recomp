@@ -20,7 +20,7 @@ hybrid arena, and both are reserved out of the same 32-bit address space:
 | --- | --- | --- | --- |
 | 32 MB | 16 MB | ~1.5 GB | boots, dies after ~10 minutes |
 | 64 MB | 16 MB | ~2.5 GB | does not fit - boot stops at 7 of 10 rows |
-| 48 MB |  8 MB | ~1.7 GB | boots, ten of ten rows |
+| 48 MB |  8 MB | ~1.7 GB | boots, ten of ten rows, **thirty minutes with no fault** |
 
 Raising `ES3_THREAD_STACK_MB` alone is therefore not a fix and not even
 neutral: at 64 MB the failure looks nothing like an out-of-memory error, it
@@ -31,6 +31,17 @@ here, for three runs.
 The lever is the pair. Arenas and stacks trade against each other, and
 `ES3_HYBRID_ARENA_MB=8` with `ES3_THREAD_STACK_MB=48` buys 50% more stack
 headroom than the default while still fitting.
+
+## The workaround, and why it is believable
+
+`ES3_HYBRID_ARENA_MB=8 ES3_THREAD_STACK_MB=48` ran thirty minutes and ended
+only because the test's own timeout killed it - no `C00000FD`, no SEH event
+of any kind, against ten minutes to a stack overflow on the default pair.
+
+That the extra headroom removes the fault rather than postponing it is the
+useful part. Something consuming stack without bound would have bought about
+fifteen minutes from fifty per cent more stack, not an indefinite run. So the
+call depth has a ceiling, and the default simply sits under it.
 
 ## What would actually fix it
 
