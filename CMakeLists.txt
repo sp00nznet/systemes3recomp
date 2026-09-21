@@ -247,4 +247,14 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 4)
                                        "${ES3_HYBRID_DIR}/hybrid.c")
     target_include_directories(hybrid_fpu_selftest PRIVATE "${ES3_HYBRID_DIR}")
     add_test(NAME hybrid_fpu_selftest COMMAND hybrid_fpu_selftest)
+
+    # pcrecomp's CPU helper checks. They existed and were never registered, so
+    # nothing had run them - the rotate and SSE checks in it included. Inside
+    # the same 32-bit guard as the check above, and for a related reason: it
+    # casts addresses to uint32_t the way the recomp32 runtime does, so a
+    # 64-bit build of it truncates every pointer and faults on the first read.
+    set(ES3_CPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pcrecomp/runtime/recomp32_cpu")
+    add_executable(cpu_selftest "${ES3_CPU_DIR}/cpu_selftest.c")
+    target_include_directories(cpu_selftest PRIVATE "${ES3_CPU_DIR}")
+    add_test(NAME cpu_selftest COMMAND cpu_selftest)
 endif()
