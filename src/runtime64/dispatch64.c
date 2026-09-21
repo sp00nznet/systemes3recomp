@@ -17,6 +17,7 @@
 
 #include "es3_rt64.h"
 #include "thunk64.h"
+#include "es3_input.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -551,6 +552,61 @@ int es3_native_call(CPU *c, uint64_t target)
      * void _CxxThrowException(void *object, _ThrowInfo *ti) - rcx, rdx.
      * es3_eh_throw returns only when no guest frame catches, and then the call
      * is forwarded and dies the way it used to. */
+    /* ---- the cabinet's screen is not the desktop's ----
+     *
+     * The game measures the desktop and refuses to start if it is smaller than
+     * the pod's screen: "The current resolution is too low to run this game",
+     * as a modal dialog, and then it exits. That is correct on a cabinet,
+     * where the screen is the one the game was built for, and wrong here,
+     * where the desktop is whatever the session happens to be - a remote
+     * session that reconnects at 1806x972 stops the game dead.
+     *
+     * So SM_CXSCREEN and SM_CYSCREEN report the cabinet's size. Nothing else
+     * is touched: the window is still made at whatever the real desktop can
+     * show, and the back buffer is still what CreateDevice agreed to.
+     * --screen WxH overrides it.
+     */
+    if (g_addr_GetSystemMetrics && target == g_addr_GetSystemMetrics) {
+        int what = (int)(uint32_t)c->rcx;
+        if (what == 0 /* SM_CXSCREEN */ || what == 1 /* SM_CYSCREEN */) {
+            static long said;
+            c->rax = (uint64_t)(uint32_t)(what == 0 ? g_screen_w : g_screen_h);
+            if (InterlockedExchange(&said, 1) == 0)
+                fprintf(stderr, "[screen] reporting %dx%d to the guest, not the "
+                                "desktop's size\n", g_screen_w, g_screen_h);
+            return 1;
+        }
+    }
+
+    /* ---- a modal dialog is not an answer ----
+     *
+     * MessageBoxW does not return until somebody clicks it, and the window is
+     * routinely somewhere nobody is looking - another desktop, behind a
+     * full-screen game, or on a session that has since been reconnected. From
+     * outside, the process is simply stopped: no fault, no output, and a guest
+     * that is not executing a single lifted instruction. That is exactly how
+     * this presented, and it was taken for a deadlock twice.
+     *
+     * So: say what it said, and answer it. IDOK is what a cabinet with no
+     * keyboard effectively gives it. */
+    if ((g_addr_MessageBoxW && target == g_addr_MessageBoxW) ||
+        (g_addr_MessageBoxA && target == g_addr_MessageBoxA)) {
+        int wide = (target == g_addr_MessageBoxW);
+        const void *text = (const void *)(uintptr_t)c->rdx;
+        const void *cap  = (const void *)(uintptr_t)c->r8;
+        if (wide)
+            fprintf(stderr, "[msgbox] \"%ls\": %ls  (answered IDOK)\n",
+                    cap ? (const wchar_t *)cap : L"",
+                    text ? (const wchar_t *)text : L"");
+        else
+            fprintf(stderr, "[msgbox] \"%s\": %s  (answered IDOK)\n",
+                    cap ? (const char *)cap : "",
+                    text ? (const char *)text : "");
+        fflush(stderr);
+        c->rax = 1;                     /* IDOK */
+        return 1;
+    }
+
     if (target == g_addr_CxxThrowException)
         es3_eh_throw(c, rd64(gsp), c->rcx, c->rdx);
 
@@ -1320,7 +1376,9 @@ void es3_rs_dump(void)
  *
  * Until that is settled the default build keeps the behaviour that is known to
  * work: rendering at 43 fps with 03-01 on screen. */
+int g_screen_w = 1920, g_screen_h = 1080;   /* --screen WxH */
 int g_io_board = 0;
+unsigned g_io_press_at = 0;   /* --io-press-at N, seconds; 0 = never */
 
 /* Prime the library's OWN state, then let its own code run.
  *
@@ -1364,6 +1422,73 @@ static void io_board_prime(void)
      * publishing one: the game's seventy-odd direct readers of this global
      * then see the same records the accessors hand out, which is the thing
      * the first version of this got wrong. */
+    /* ---- the human, written into the node the game reads ----
+     *
+     * The record's switch fields are one BYTE each rather than packed bits -
+     * the poll at 0x1409E1928 onwards copies them out individually - and the
+     * three analog channels at +0x28A, +0x28C and +0x28E are 16-bit, which
+     * the caller turns into floats with a subtract-and-scale at 0x1409E18D8.
+     *
+     * Which byte is which button is not known yet, and is not guessed here.
+     * The attract screen asks for ANY button, so every switch byte follows
+     * es3_input's `any` until there is a reason to separate them; the stick
+     * goes to the first two analog channels centred on 0x8000, which is what
+     * the calibration either side of it expects.
+     */
+    {
+        /* Sampled at about 120 Hz, not on every call.
+         *
+         * io_board_prime runs on every dispatch of the three accessors and
+         * again every 50 ms from its own thread, and the accessors are hit
+         * hard - the game asks for the node table inside its per-frame poll.
+         * es3_input_poll calls XInputGetState, which on a machine with NO pad
+         * connected costs about a millisecond because it goes looking for one,
+         * and at accessor rate that is enough to stop the game reaching its
+         * first frame at all. The 32-bit side avoids this by sampling from its
+         * own ticker rather than from the protocol path.
+         *
+         * The cached sample is what gets written to the node, so the game sees
+         * a steady value between samples rather than a zero. */
+        static es3_input_t in;
+        static DWORD last_ms;
+        uint64_t nb = rd64(GVA(0x141F2E770ull));
+        DWORD now_ms = GetTickCount();
+        if (now_ms - last_ms >= 8 || !last_ms) {
+            last_ms = now_ms ? now_ms : 1;
+            es3_input_poll(&in);
+        }
+        /* --io-press-at N: hold every switch for a second, N seconds in.
+         *
+         * A person at the keyboard is the real input, and the sampler only
+         * reads one while a window of this process has the foreground - which
+         * is right, and which makes the path impossible to TEST from a script.
+         * The 32-bit side has ES3_JVS_SEQ for the same reason. */
+        if (g_io_press_at) {
+            static DWORD t0;
+            DWORD now = GetTickCount();
+            if (!t0) t0 = now;
+            if (now - t0 >= g_io_press_at * 1000u &&
+                now - t0 <  g_io_press_at * 1000u + 1000u) {
+                static long said;
+                in.any = 1;
+                in.start = 1;
+                if (InterlockedExchange(&said, 1) == 0)
+                    fprintf(stderr, "[io] --io-press-at: pressing every switch "
+                                    "for one second\n");
+            }
+        }
+        if (nb) {
+            static const unsigned sw[] = { 0x109, 0x187, 0x189, 0x18a, 0x18b,
+                                           0x18e, 0x190, 0x19e, 0x19f };
+            uint64_t node = nb + (uint64_t)1 * IO_NODE_STRIDE;
+            for (unsigned q = 0; q < sizeof sw / sizeof sw[0]; q++)
+                wr8(node + sw[q], (uint8_t)(in.any ? 1 : 0));
+            wr16(node + 0x28a, (uint16_t)(0x8000 + in.x / 2));
+            wr16(node + 0x28c, (uint16_t)(0x8000 + in.y / 2));
+            wr16(node + 0x28e, (uint16_t)0x8000);
+        }
+    }
+
     base = rd64(GVA(0x141F2E770ull));
     if (!base) {
         static unsigned char table[IO_NODE_COUNT][IO_NODE_STRIDE];

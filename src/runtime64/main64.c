@@ -50,6 +50,14 @@ int main(int argc, char **argv)
             g_capture_max = strtoull(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc)
             g_capture_frame = strtoull(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--io-press-at") && i + 1 < argc)
+            g_io_press_at = (unsigned)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--screen") && i + 1 < argc) {
+            int w = 0, h = 0;
+            if (sscanf(argv[++i], "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+                g_screen_w = w; g_screen_h = h;
+            }
+        }
         else if (!strcmp(argv[i], "--io-board"))
             g_io_board = 1;
         else if (!strcmp(argv[i], "--rs-poke"))

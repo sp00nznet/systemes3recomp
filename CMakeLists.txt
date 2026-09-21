@@ -176,10 +176,12 @@ function(es3_runtime64 target generated_dir)
         "${ES3_RUNTIME64_DIR}/main64.c"
         "${ES3_RUNTIME64_DIR}/thunk64.asm"
         "${ES3_CPU64_DIR}/eh64.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/input/es3_input.c"
     )
     target_include_directories(${target} PRIVATE
         "${ES3_RUNTIME64_DIR}"
         "${ES3_CPU64_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/input"
         "${generated_dir}"
     )
     # /FI and not /D. MSVC accepts a function-like macro on the command line,

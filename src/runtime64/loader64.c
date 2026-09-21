@@ -36,6 +36,8 @@ static int g_nimports;
 uint64_t g_addr_RaiseException;
 uint64_t g_addr_CxxThrowException;
 uint64_t g_addr_OpenFileMappingW, g_addr_LoadLibraryW, g_addr_LoadLibraryA;
+uint64_t g_addr_MessageBoxW, g_addr_MessageBoxA;
+uint64_t g_addr_GetSystemMetrics;
 uint64_t g_addr_SetupDiGetClassDevsW, g_addr_SetupDiEnumDeviceInterfaces;
 uint64_t g_addr_CM_Locate_DevNodeW;
 uint64_t g_addr_hasp_login, g_addr_hasp_logout;
@@ -80,6 +82,12 @@ static const struct { const char *name; uint64_t *slot; } k_intercepts[] = {
     /* The I/O board hunt. Battle Pods does not open a port by name the way the
      * 32-bit titles do - it enumerates, finds nothing, and reports 03-01
      * without ever reaching a CreateFile. These name what it was looking for. */
+    /* A modal dialog stops a recompiled game dead and says nothing: the
+     * window is often on a desktop nobody is looking at, and from outside
+     * it is indistinguishable from a deadlock. */
+    { "GetSystemMetrics",  &g_addr_GetSystemMetrics },
+    { "MessageBoxW",       &g_addr_MessageBoxW },
+    { "MessageBoxA",       &g_addr_MessageBoxA },
     { "OpenFileMappingW",  &g_addr_OpenFileMappingW },
     { "LoadLibraryW",      &g_addr_LoadLibraryW },
     { "LoadLibraryA",      &g_addr_LoadLibraryA },

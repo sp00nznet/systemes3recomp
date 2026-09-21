@@ -75,11 +75,15 @@ void es3_rs_service(void);
 void es3_rs_dump(void);
 extern size_t g_rs_size;
 extern int g_io_board;
+extern unsigned g_io_press_at;
 extern int g_rs_poke;
 extern int g_rs_dump_on;
 
 /* Device enumeration, which is how this title looks for its I/O board. */
 extern uint64_t g_addr_OpenFileMappingW, g_addr_LoadLibraryW, g_addr_LoadLibraryA;
+extern uint64_t g_addr_MessageBoxW, g_addr_MessageBoxA;
+extern uint64_t g_addr_GetSystemMetrics;
+extern int g_screen_w, g_screen_h;
 extern uint64_t g_addr_SetupDiGetClassDevsW, g_addr_SetupDiEnumDeviceInterfaces;
 extern uint64_t g_addr_CM_Locate_DevNodeW;
 
