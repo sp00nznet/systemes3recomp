@@ -306,17 +306,29 @@ static void dispatch_inner(CPU *c, uint32_t va)
 
     if (HLE_IS_ADDR(va)) { hle_call(c, HLE_ID_OF(va)); return; }
 
-    /* A guest function this runtime answers itself - see es3_bind_guest().
-     * One load and a branch when nothing is bound, which is the usual case. */
-    if (va >= es3_guest_hle_lo && va <= es3_guest_hle_hi &&
-        es3_guest_hle_run(c, va)) return;
-
     /* A thunk address, not a guest VA. Lifted code that reads a slot this
      * runtime handed to a real library - a window procedure, a comparator -
      * gets the thunk back, and calling it would go the long way round through
      * the real->lifted trampoline and arrive here anyway. Short-circuit to the
-     * function it stands for. */
+     * function it stands for.
+     *
+     * BEFORE the binding check, and that order is the whole point. It used to
+     * come after, so a function reached through a thunk had its binding tested
+     * against the THUNK's address, missed, and then ran its own body - the
+     * hook silently dead, with nothing anywhere saying so.
+     *
+     * It cost a day on Mario Kart's boot checklist. A row reached through a
+     * vtable slot that had been thunked could not be answered at all, and
+     * es3_bind_guest on it looked like it had simply not been reached. Which
+     * binding worked depended on whether that particular callback had been
+     * handed out to a real DLL, which is not a property anyone can see from
+     * the call site. */
     if (hybrid_thunk_target(va, &ova)) va = ova;
+
+    /* A guest function this runtime answers itself - see es3_bind_guest().
+     * One load and a branch when nothing is bound, which is the usual case. */
+    if (va >= es3_guest_hle_lo && va <= es3_guest_hle_hi &&
+        es3_guest_hle_run(c, va)) return;
 
     void (*fn)(CPU *) = find(va);
     if (fn) { fn(c); return; }
