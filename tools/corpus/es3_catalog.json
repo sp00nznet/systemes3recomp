@@ -1,0 +1,2295 @@
+[
+  {
+    "archive": "Lost Land Adventure (2014) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Lost Land Adventure (2014) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 7160922606,
+    "title": "Lost Land Adventure (2014)",
+    "files": 675,
+    "binary": "LLA\\Binaries\\Win64\\DomeShooterGame-Win64-Shipping.exe",
+    "binary_bytes": 25463808,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 627,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        173
+      ],
+      [
+        "KERNEL32.dll",
+        141
+      ],
+      [
+        "USER32.dll",
+        94
+      ],
+      [
+        "WSOCK32.dll",
+        27
+      ],
+      [
+        "nvtt_64.dll",
+        24
+      ],
+      [
+        "IMM32.dll",
+        21
+      ],
+      [
+        "GDI32.dll",
+        18
+      ],
+      [
+        "bink2w64.dll",
+        18
+      ],
+      [
+        "WININET.dll",
+        13
+      ],
+      [
+        "dbghelp.dll",
+        12
+      ],
+      [
+        "ole32.dll",
+        11
+      ],
+      [
+        "WINMM.dll",
+        10
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "ADVAPI32.dll",
+        7
+      ],
+      [
+        "libvorbisfile_64.dll",
+        7
+      ],
+      [
+        "d3dx9_43.dll",
+        6
+      ],
+      [
+        "OLEAUT32.dll",
+        4
+      ],
+      [
+        "d3d9.dll",
+        4
+      ],
+      [
+        "hasp_windows_x64_106993.dll",
+        4
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        3
+      ],
+      [
+        "MSVCP100.dll",
+        3
+      ],
+      [
+        "SHELL32.dll",
+        3
+      ],
+      [
+        "tbbmalloc.dll",
+        3
+      ],
+      [
+        "PSAPI.DLL",
+        2
+      ],
+      [
+        "X3DAudio1_7.dll",
+        2
+      ],
+      [
+        "XINPUT1_3.dll",
+        2
+      ],
+      [
+        "ApexFrameworkCHECKED_x64.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "IPHLPAPI.DLL",
+        1
+      ],
+      [
+        "PhysXExtensions64.dll",
+        1
+      ],
+      [
+        "XAPOFX1_5.dll",
+        1
+      ],
+      [
+        "d3dx11_43.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2014-06-02 10:33:03 UTC"
+  },
+  {
+    "archive": "MachStorm (2014-01-10) (Japan) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\MachStorm (2014-01-10) (Japan) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 3937282313,
+    "title": "MachStorm (2014-01-10) (Japan)",
+    "files": 30,
+    "binary": "src\\game\\ACE7_WIN\\ACE7_WIN_10.exe",
+    "binary_bytes": 6920704,
+    "arch": "x86",
+    "stage": "catalogued",
+    "pe": "PE32 i386",
+    "imports": 254,
+    "dlls": [
+      [
+        "KERNEL32.dll",
+        144
+      ],
+      [
+        "WS2_32.dll",
+        26
+      ],
+      [
+        "USER32.dll",
+        18
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "SSLEAY32.dll",
+        9
+      ],
+      [
+        "nbamMfCapture.dll",
+        9
+      ],
+      [
+        "LIBEAY32.dll",
+        7
+      ],
+      [
+        "eOkaoDt.dll",
+        7
+      ],
+      [
+        "IPHLPAPI.DLL",
+        5
+      ],
+      [
+        "nbamsavdat.dll",
+        5
+      ],
+      [
+        "ole32.dll",
+        4
+      ],
+      [
+        "XINPUT1_3.dll",
+        3
+      ],
+      [
+        "d3d9.dll",
+        3
+      ],
+      [
+        "DNSAPI.dll",
+        1
+      ],
+      [
+        "MFPlat.DLL",
+        1
+      ],
+      [
+        "SHELL32.dll",
+        1
+      ],
+      [
+        "d3dx9_43.dll",
+        1
+      ],
+      [
+        "imagehlp.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2014-01-10 09:36:51 UTC"
+  },
+  {
+    "archive": "Mario Kart Arcade GP DX (1.10.22) (2013) (Japan) [Namco ES3] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Mario Kart Arcade GP DX (1.10.22) (2013) (Japan) [Namco ES3] [TP].zip",
+    "variant": "ES3",
+    "bytes": 1936186082,
+    "title": "Mario Kart Arcade GP DX (1.10.22) (2013) (Japan)",
+    "files": 16003,
+    "binary": "MK_AGP3_FINAL.exe",
+    "binary_bytes": 6819840,
+    "arch": "x86",
+    "stage": "catalogued",
+    "pe": "PE32 i386",
+    "imports": 481,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        178
+      ],
+      [
+        "KERNEL32.dll",
+        96
+      ],
+      [
+        "USER32.dll",
+        59
+      ],
+      [
+        "WS2_32.dll",
+        22
+      ],
+      [
+        "IPHLPAPI.DLL",
+        13
+      ],
+      [
+        "eOkaoDt.dll",
+        13
+      ],
+      [
+        "WINHTTP.dll",
+        10
+      ],
+      [
+        "eOkaoPt.dll",
+        10
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "d3dx10_43.dll",
+        9
+      ],
+      [
+        "eOkaoAg.dll",
+        8
+      ],
+      [
+        "eOkaoGn.dll",
+        8
+      ],
+      [
+        "GDI32.dll",
+        7
+      ],
+      [
+        "ole32.dll",
+        7
+      ],
+      [
+        "MFPlat.DLL",
+        4
+      ],
+      [
+        "Nbam_QR_Code.dll",
+        4
+      ],
+      [
+        "WINMM.dll",
+        4
+      ],
+      [
+        "d3dx9_43.dll",
+        4
+      ],
+      [
+        "ADVAPI32.dll",
+        3
+      ],
+      [
+        "SHELL32.dll",
+        3
+      ],
+      [
+        "SHLWAPI.dll",
+        2
+      ],
+      [
+        "d3d10.dll",
+        2
+      ],
+      [
+        "COMCTL32.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "MFReadWrite.dll",
+        1
+      ],
+      [
+        "d3d9.dll",
+        1
+      ],
+      [
+        "eOkaoCo.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2015-07-13 09:56:52 UTC"
+  },
+  {
+    "archive": "Mario Kart Arcade GP DX (1.10.22) (English Mod 0.6) (2013) (Japan) [Namco ES3A] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Mario Kart Arcade GP DX (1.10.22) (English Mod 0.6) (2013) (Japan) [Namco ES3A] [TP].zip",
+    "variant": "ES3A",
+    "bytes": 2019140935,
+    "title": "Mario Kart Arcade GP DX (1.10.22) (English Mod 0.6) (2013) (Japan)",
+    "files": 16420,
+    "binary": "MK_AGP3_FINAL.exe",
+    "binary_bytes": 6819840,
+    "arch": "x86",
+    "stage": "catalogued",
+    "pe": "PE32 i386",
+    "imports": 481,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        178
+      ],
+      [
+        "KERNEL32.dll",
+        96
+      ],
+      [
+        "USER32.dll",
+        59
+      ],
+      [
+        "WS2_32.dll",
+        22
+      ],
+      [
+        "IPHLPAPI.DLL",
+        13
+      ],
+      [
+        "eOkaoDt.dll",
+        13
+      ],
+      [
+        "WINHTTP.dll",
+        10
+      ],
+      [
+        "eOkaoPt.dll",
+        10
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "d3dx10_43.dll",
+        9
+      ],
+      [
+        "eOkaoAg.dll",
+        8
+      ],
+      [
+        "eOkaoGn.dll",
+        8
+      ],
+      [
+        "GDI32.dll",
+        7
+      ],
+      [
+        "ole32.dll",
+        7
+      ],
+      [
+        "MFPlat.DLL",
+        4
+      ],
+      [
+        "Nbam_QR_Code.dll",
+        4
+      ],
+      [
+        "WINMM.dll",
+        4
+      ],
+      [
+        "d3dx9_43.dll",
+        4
+      ],
+      [
+        "ADVAPI32.dll",
+        3
+      ],
+      [
+        "SHELL32.dll",
+        3
+      ],
+      [
+        "SHLWAPI.dll",
+        2
+      ],
+      [
+        "d3d10.dll",
+        2
+      ],
+      [
+        "COMCTL32.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "MFReadWrite.dll",
+        1
+      ],
+      [
+        "d3d9.dll",
+        1
+      ],
+      [
+        "eOkaoCo.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2015-07-13 09:56:52 UTC"
+  },
+  {
+    "archive": "Mario Kart Arcade GP DX (1.18.16) (2013) (Japan) [Namco ES3A] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Mario Kart Arcade GP DX (1.18.16) (2013) (Japan) [Namco ES3A] [TP].zip",
+    "variant": "ES3A",
+    "bytes": 2513168044,
+    "title": "Mario Kart Arcade GP DX (1.18.16) (2013) (Japan)",
+    "files": 18731,
+    "binary": "MK_AGP3_FINAL.exe",
+    "binary_bytes": 7432704,
+    "arch": "x86",
+    "stage": "catalogued",
+    "pe": "PE32 i386",
+    "imports": 513,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        188
+      ],
+      [
+        "KERNEL32.dll",
+        99
+      ],
+      [
+        "USER32.dll",
+        59
+      ],
+      [
+        "WS2_32.dll",
+        22
+      ],
+      [
+        "eOkaoDt.dll",
+        13
+      ],
+      [
+        "IPHLPAPI.DLL",
+        11
+      ],
+      [
+        "bngrw.dll",
+        11
+      ],
+      [
+        "WINHTTP.dll",
+        10
+      ],
+      [
+        "eOkaoPt.dll",
+        10
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "d3dx10_43.dll",
+        9
+      ],
+      [
+        "eOkaoAg.dll",
+        8
+      ],
+      [
+        "eOkaoGn.dll",
+        8
+      ],
+      [
+        "GDI32.dll",
+        7
+      ],
+      [
+        "ole32.dll",
+        7
+      ],
+      [
+        "Nbam_QR_Code.dll",
+        6
+      ],
+      [
+        "d3dx9_43.dll",
+        5
+      ],
+      [
+        "MFPlat.DLL",
+        4
+      ],
+      [
+        "OLEAUT32.dll",
+        4
+      ],
+      [
+        "SHELL32.dll",
+        4
+      ],
+      [
+        "WINMM.dll",
+        4
+      ],
+      [
+        "ADVAPI32.dll",
+        3
+      ],
+      [
+        "PSAPI.DLL",
+        2
+      ],
+      [
+        "SHLWAPI.dll",
+        2
+      ],
+      [
+        "d3d10.dll",
+        2
+      ],
+      [
+        "COMCTL32.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "MFReadWrite.dll",
+        1
+      ],
+      [
+        "d3d9.dll",
+        1
+      ],
+      [
+        "eOkaoCo.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2020-11-16 06:56:42 UTC"
+  },
+  {
+    "archive": "Mario Kart Arcade GP DX (1.18.16) (English Mod 1.0) (2013) [Namco ES3A] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Mario Kart Arcade GP DX (1.18.16) (English Mod 1.0) (2013) [Namco ES3A] [TP].zip",
+    "variant": "ES3A",
+    "bytes": 2506226122,
+    "title": "Mario Kart Arcade GP DX (1.18.16) (English Mod 1.0) (2013)",
+    "files": 18731,
+    "binary": "MK_AGP3_FINAL.exe",
+    "binary_bytes": 7432704,
+    "arch": "x86",
+    "stage": "catalogued",
+    "pe": "PE32 i386",
+    "imports": 513,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        188
+      ],
+      [
+        "KERNEL32.dll",
+        99
+      ],
+      [
+        "USER32.dll",
+        59
+      ],
+      [
+        "WS2_32.dll",
+        22
+      ],
+      [
+        "eOkaoDt.dll",
+        13
+      ],
+      [
+        "IPHLPAPI.DLL",
+        11
+      ],
+      [
+        "bngrw.dll",
+        11
+      ],
+      [
+        "WINHTTP.dll",
+        10
+      ],
+      [
+        "eOkaoPt.dll",
+        10
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "d3dx10_43.dll",
+        9
+      ],
+      [
+        "eOkaoAg.dll",
+        8
+      ],
+      [
+        "eOkaoGn.dll",
+        8
+      ],
+      [
+        "GDI32.dll",
+        7
+      ],
+      [
+        "ole32.dll",
+        7
+      ],
+      [
+        "Nbam_QR_Code.dll",
+        6
+      ],
+      [
+        "d3dx9_43.dll",
+        5
+      ],
+      [
+        "MFPlat.DLL",
+        4
+      ],
+      [
+        "OLEAUT32.dll",
+        4
+      ],
+      [
+        "SHELL32.dll",
+        4
+      ],
+      [
+        "WINMM.dll",
+        4
+      ],
+      [
+        "ADVAPI32.dll",
+        3
+      ],
+      [
+        "PSAPI.DLL",
+        2
+      ],
+      [
+        "SHLWAPI.dll",
+        2
+      ],
+      [
+        "d3d10.dll",
+        2
+      ],
+      [
+        "COMCTL32.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "MFReadWrite.dll",
+        1
+      ],
+      [
+        "d3d9.dll",
+        1
+      ],
+      [
+        "eOkaoCo.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2020-11-16 06:56:42 UTC"
+  },
+  {
+    "archive": "Pokken Tournament (Ver. A) (2017-03-30) [Namco ES3B] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Pokken Tournament (Ver. A) (2017-03-30) [Namco ES3B] [TP].zip",
+    "variant": "ES3B",
+    "bytes": 4017061541,
+    "title": "Pokken Tournament (Ver. A) (2017-03-30)",
+    "files": 6690,
+    "binary": "ferrum_app.exe",
+    "binary_bytes": 14784512,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 383,
+    "dlls": [
+      [
+        "KERNEL32.dll",
+        173
+      ],
+      [
+        "USER32.dll",
+        53
+      ],
+      [
+        "WS2_32.dll",
+        46
+      ],
+      [
+        "SSLEAY32.dll",
+        23
+      ],
+      [
+        "LIBEAY32.dll",
+        20
+      ],
+      [
+        "IPHLPAPI.DLL",
+        11
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "wajvio.dll",
+        8
+      ],
+      [
+        "ole32.dll",
+        6
+      ],
+      [
+        "MFPlat.DLL",
+        5
+      ],
+      [
+        "nbamsavdat.dll",
+        5
+      ],
+      [
+        "ADVAPI32.dll",
+        4
+      ],
+      [
+        "XINPUT1_3.dll",
+        3
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        2
+      ],
+      [
+        "SHELL32.dll",
+        2
+      ],
+      [
+        "dwmapi.dll",
+        2
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "GDI32.dll",
+        1
+      ],
+      [
+        "MFReadWrite.dll",
+        1
+      ],
+      [
+        "PROPSYS.dll",
+        1
+      ],
+      [
+        "SHLWAPI.dll",
+        1
+      ],
+      [
+        "WINMM.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dbghelp.dll",
+        1
+      ],
+      [
+        "driverUtil.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ],
+      [
+        "imagehlp.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2017-03-31 02:29:07 UTC"
+  },
+  {
+    "archive": "Star Wars Battle Pod (2014) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Star Wars Battle Pod (2014) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 3286449921,
+    "title": "Star Wars Battle Pod (2014)",
+    "files": 614,
+    "binary": "Binaries\\Win64\\SWArcGame-Win64-Shipping.exe",
+    "binary_bytes": 24058368,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 609,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        168
+      ],
+      [
+        "KERNEL32.dll",
+        144
+      ],
+      [
+        "USER32.dll",
+        94
+      ],
+      [
+        "WSOCK32.dll",
+        25
+      ],
+      [
+        "nvtt_64.dll",
+        24
+      ],
+      [
+        "IMM32.dll",
+        21
+      ],
+      [
+        "GDI32.dll",
+        18
+      ],
+      [
+        "WININET.dll",
+        13
+      ],
+      [
+        "dbghelp.dll",
+        12
+      ],
+      [
+        "ole32.dll",
+        11
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "nbamMfCapture.dll",
+        8
+      ],
+      [
+        "ADVAPI32.dll",
+        7
+      ],
+      [
+        "libvorbisfile_64.dll",
+        7
+      ],
+      [
+        "d3dx9_43.dll",
+        6
+      ],
+      [
+        "OLEAUT32.dll",
+        4
+      ],
+      [
+        "d3d9.dll",
+        4
+      ],
+      [
+        "hasp_windows_x64_100610.dll",
+        4
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        3
+      ],
+      [
+        "MSVCP100.dll",
+        3
+      ],
+      [
+        "SHELL32.dll",
+        3
+      ],
+      [
+        "WINMM.dll",
+        3
+      ],
+      [
+        "tbbmalloc.dll",
+        3
+      ],
+      [
+        "MFPlat.DLL",
+        2
+      ],
+      [
+        "PSAPI.DLL",
+        2
+      ],
+      [
+        "X3DAudio1_7.dll",
+        2
+      ],
+      [
+        "XINPUT1_3.dll",
+        2
+      ],
+      [
+        "ApexFrameworkCHECKED_x64.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "IPHLPAPI.DLL",
+        1
+      ],
+      [
+        "PhysXExtensions64.dll",
+        1
+      ],
+      [
+        "XAPOFX1_5.dll",
+        1
+      ],
+      [
+        "d3dx11_43.dll",
+        1
+      ],
+      [
+        "faultrep.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2014-11-26 05:40:07 UTC"
+  },
+  {
+    "archive": "Tekken 7 (1.2) (2015) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Tekken 7 (1.2) (2015) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 9752853078,
+    "title": "Tekken 7 (1.2) (2015)",
+    "files": 43475,
+    "binary": "TekkenGame\\Binaries\\Win64\\TekkenGame-Win64-Shipping.exe",
+    "binary_bytes": 42747904,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 1121,
+    "dlls": [
+      [
+        "MSVCR120.dll",
+        257
+      ],
+      [
+        "KERNEL32.dll",
+        216
+      ],
+      [
+        "MSVCP120.dll",
+        197
+      ],
+      [
+        "USER32.dll",
+        98
+      ],
+      [
+        "LIBEAY32.dll",
+        65
+      ],
+      [
+        "SSLEAY32.dll",
+        49
+      ],
+      [
+        "WS2_32.dll",
+        48
+      ],
+      [
+        "ADVAPI32.dll",
+        30
+      ],
+      [
+        "GDI32.dll",
+        24
+      ],
+      [
+        "WLDAP32.dll",
+        16
+      ],
+      [
+        "ole32.dll",
+        16
+      ],
+      [
+        "dbghelp.dll",
+        14
+      ],
+      [
+        "WININET.dll",
+        13
+      ],
+      [
+        "SETUPAPI.dll",
+        12
+      ],
+      [
+        "IPHLPAPI.DLL",
+        9
+      ],
+      [
+        "IMM32.dll",
+        8
+      ],
+      [
+        "OPENGL32.dll",
+        6
+      ],
+      [
+        "SHELL32.dll",
+        5
+      ],
+      [
+        "COMDLG32.dll",
+        4
+      ],
+      [
+        "MSACM32.dll",
+        4
+      ],
+      [
+        "OLEAUT32.dll",
+        4
+      ],
+      [
+        "dwmapi.dll",
+        4
+      ],
+      [
+        "DSOUND.dll",
+        3
+      ],
+      [
+        "VERSION.dll",
+        3
+      ],
+      [
+        "WINMM.dll",
+        3
+      ],
+      [
+        "PSAPI.DLL",
+        2
+      ],
+      [
+        "X3DAudio1_7.dll",
+        2
+      ],
+      [
+        "XINPUT1_3.dll",
+        2
+      ],
+      [
+        "d3d9.dll",
+        2
+      ],
+      [
+        "POWRPROF.dll",
+        1
+      ],
+      [
+        "XAPOFX1_5.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ],
+      [
+        "imagehlp.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 12.00   built 2015-12-12 15:39:41 UTC"
+  },
+  {
+    "archive": "Tekken 7 Fated Retribution (1.06.00) (2016) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Tekken 7 Fated Retribution (1.06.00) (2016) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 13211338098,
+    "title": "Tekken 7 Fated Retribution (1.06.00) (2016)",
+    "files": 56807,
+    "binary": "TekkenGame\\Binaries\\Win64\\TekkenGame-Win64-Shipping.exe",
+    "binary_bytes": 55789568,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 1137,
+    "dlls": [
+      [
+        "MSVCR120.dll",
+        271
+      ],
+      [
+        "KERNEL32.dll",
+        219
+      ],
+      [
+        "MSVCP120.dll",
+        201
+      ],
+      [
+        "USER32.dll",
+        97
+      ],
+      [
+        "LIBEAY32.dll",
+        65
+      ],
+      [
+        "WS2_32.dll",
+        53
+      ],
+      [
+        "SSLEAY32.dll",
+        49
+      ],
+      [
+        "ADVAPI32.dll",
+        26
+      ],
+      [
+        "GDI32.dll",
+        24
+      ],
+      [
+        "WLDAP32.dll",
+        16
+      ],
+      [
+        "ole32.dll",
+        16
+      ],
+      [
+        "WININET.dll",
+        13
+      ],
+      [
+        "IMM32.dll",
+        12
+      ],
+      [
+        "SETUPAPI.dll",
+        12
+      ],
+      [
+        "IPHLPAPI.DLL",
+        9
+      ],
+      [
+        "OPENGL32.dll",
+        6
+      ],
+      [
+        "SHELL32.dll",
+        5
+      ],
+      [
+        "COMDLG32.dll",
+        4
+      ],
+      [
+        "MSACM32.dll",
+        4
+      ],
+      [
+        "PSAPI.DLL",
+        4
+      ],
+      [
+        "dwmapi.dll",
+        4
+      ],
+      [
+        "DSOUND.dll",
+        3
+      ],
+      [
+        "OLEAUT32.dll",
+        3
+      ],
+      [
+        "VERSION.dll",
+        3
+      ],
+      [
+        "WINMM.dll",
+        3
+      ],
+      [
+        "XINPUT1_3.dll",
+        3
+      ],
+      [
+        "X3DAudio1_7.dll",
+        2
+      ],
+      [
+        "d3d9.dll",
+        2
+      ],
+      [
+        "dxgi.dll",
+        2
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "POWRPROF.dll",
+        1
+      ],
+      [
+        "XAPOFX1_5.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dbghelp.dll",
+        1
+      ],
+      [
+        "imagehlp.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 12.00   built 2016-05-18 19:10:06 UTC"
+  },
+  {
+    "archive": "Tekken 7 Fated Retribution Round 2 (1.08.00) (2019) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Tekken 7 Fated Retribution Round 2 (1.08.00) (2019) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 17509840948,
+    "title": "Tekken 7 Fated Retribution Round 2 (1.08.00) (2019)",
+    "files": 102637,
+    "binary": "TekkenGame\\Binaries\\Win64\\TekkenGame-Win64-Shipping.exe",
+    "binary_bytes": 55671296,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 1137,
+    "dlls": [
+      [
+        "MSVCR120.dll",
+        272
+      ],
+      [
+        "KERNEL32.dll",
+        217
+      ],
+      [
+        "MSVCP120.dll",
+        202
+      ],
+      [
+        "USER32.dll",
+        97
+      ],
+      [
+        "LIBEAY32.dll",
+        65
+      ],
+      [
+        "WS2_32.dll",
+        53
+      ],
+      [
+        "SSLEAY32.dll",
+        49
+      ],
+      [
+        "ADVAPI32.dll",
+        26
+      ],
+      [
+        "GDI32.dll",
+        24
+      ],
+      [
+        "WLDAP32.dll",
+        16
+      ],
+      [
+        "ole32.dll",
+        16
+      ],
+      [
+        "WININET.dll",
+        13
+      ],
+      [
+        "IMM32.dll",
+        12
+      ],
+      [
+        "SETUPAPI.dll",
+        12
+      ],
+      [
+        "IPHLPAPI.DLL",
+        9
+      ],
+      [
+        "OPENGL32.dll",
+        6
+      ],
+      [
+        "SHELL32.dll",
+        5
+      ],
+      [
+        "COMDLG32.dll",
+        4
+      ],
+      [
+        "MSACM32.dll",
+        4
+      ],
+      [
+        "PSAPI.DLL",
+        4
+      ],
+      [
+        "dwmapi.dll",
+        4
+      ],
+      [
+        "DSOUND.dll",
+        3
+      ],
+      [
+        "OLEAUT32.dll",
+        3
+      ],
+      [
+        "VERSION.dll",
+        3
+      ],
+      [
+        "WINMM.dll",
+        3
+      ],
+      [
+        "XINPUT1_3.dll",
+        3
+      ],
+      [
+        "X3DAudio1_7.dll",
+        2
+      ],
+      [
+        "d3d9.dll",
+        2
+      ],
+      [
+        "dxgi.dll",
+        2
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "POWRPROF.dll",
+        1
+      ],
+      [
+        "XAPOFX1_5.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dbghelp.dll",
+        1
+      ],
+      [
+        "imagehlp.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 12.00   built 2019-05-15 03:58:18 UTC"
+  },
+  {
+    "archive": "Time Crisis 5 (2015) [Namco ES3X] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Time Crisis 5 (2015) [Namco ES3X] [TP].zip",
+    "variant": "ES3X",
+    "bytes": 10099962832,
+    "title": "Time Crisis 5 (2015)",
+    "files": 828,
+    "binary": "TC5\\Binaries\\Win64\\TimeCrisisGame-Win64-Shipping.exe",
+    "binary_bytes": 25766400,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 637,
+    "dlls": [
+      [
+        "MSVCR100.dll",
+        170
+      ],
+      [
+        "KERNEL32.dll",
+        144
+      ],
+      [
+        "USER32.dll",
+        85
+      ],
+      [
+        "WSOCK32.dll",
+        27
+      ],
+      [
+        "nvtt_64.dll",
+        24
+      ],
+      [
+        "GDI32.dll",
+        18
+      ],
+      [
+        "bink2w64.dll",
+        18
+      ],
+      [
+        "substance_sse2_blend.dll",
+        18
+      ],
+      [
+        "WININET.dll",
+        13
+      ],
+      [
+        "substance_linker.dll",
+        13
+      ],
+      [
+        "dbghelp.dll",
+        12
+      ],
+      [
+        "ole32.dll",
+        11
+      ],
+      [
+        "WINMM.dll",
+        10
+      ],
+      [
+        "SETUPAPI.dll",
+        9
+      ],
+      [
+        "WINUSB.DLL",
+        8
+      ],
+      [
+        "libvorbisfile_64.dll",
+        7
+      ],
+      [
+        "IMM32.dll",
+        6
+      ],
+      [
+        "d3dx9_43.dll",
+        6
+      ],
+      [
+        "MSVCP100.dll",
+        4
+      ],
+      [
+        "d3d9.dll",
+        4
+      ],
+      [
+        "hasp_windows_x64_105293.dll",
+        4
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        3
+      ],
+      [
+        "SHELL32.dll",
+        3
+      ],
+      [
+        "tbbmalloc.dll",
+        3
+      ],
+      [
+        "OLEAUT32.dll",
+        2
+      ],
+      [
+        "PSAPI.DLL",
+        2
+      ],
+      [
+        "X3DAudio1_7.dll",
+        2
+      ],
+      [
+        "XINPUT1_3.dll",
+        2
+      ],
+      [
+        "atc_api.dll",
+        2
+      ],
+      [
+        "ADVAPI32.dll",
+        1
+      ],
+      [
+        "ApexFrameworkCHECKED_x64.dll",
+        1
+      ],
+      [
+        "DINPUT8.dll",
+        1
+      ],
+      [
+        "IPHLPAPI.DLL",
+        1
+      ],
+      [
+        "PhysXExtensions64.dll",
+        1
+      ],
+      [
+        "XAPOFX1_5.dll",
+        1
+      ],
+      [
+        "d3dx11_43.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2015-06-23 09:11:34 UTC"
+  },
+  {
+    "archive": "Wangan Midnight Maximum Tune 5 (5.00) (2014-04-24) (Japan) [Namco ES3B] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Wangan Midnight Maximum Tune 5 (5.00) (2014-04-24) (Japan) [Namco ES3B] [TP].zip",
+    "variant": "ES3B",
+    "bytes": 13442959470,
+    "title": "Wangan Midnight Maximum Tune 5 (5.00) (2014-04-24) (Japan)",
+    "files": 45362,
+    "binary": "wmn5r.exe",
+    "binary_bytes": 27366912,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 770,
+    "dlls": [
+      [
+        "MSVCP100.dll",
+        210
+      ],
+      [
+        "MSVCR100.dll",
+        166
+      ],
+      [
+        "KERNEL32.dll",
+        153
+      ],
+      [
+        "lua5.1.dll",
+        57
+      ],
+      [
+        "WS2_32.dll",
+        34
+      ],
+      [
+        "nuSound2_win64.dll",
+        32
+      ],
+      [
+        "USER32.dll",
+        27
+      ],
+      [
+        "eOkaoDt.dll",
+        12
+      ],
+      [
+        "eOkaoPt.dll",
+        10
+      ],
+      [
+        "IPHLPAPI.DLL",
+        8
+      ],
+      [
+        "eOkaoAg.dll",
+        8
+      ],
+      [
+        "eOkaoGn.dll",
+        8
+      ],
+      [
+        "MFPlat.DLL",
+        7
+      ],
+      [
+        "eOkaoCo.dll",
+        5
+      ],
+      [
+        "hasp_windows_x64_109906.dll",
+        5
+      ],
+      [
+        "ole32.dll",
+        5
+      ],
+      [
+        "ADVAPI32.dll",
+        3
+      ],
+      [
+        "PSAPI.DLL",
+        3
+      ],
+      [
+        "dbghelp.dll",
+        3
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        2
+      ],
+      [
+        "MFReadWrite.dll",
+        2
+      ],
+      [
+        "MSWSOCK.dll",
+        2
+      ],
+      [
+        "dwmapi.dll",
+        2
+      ],
+      [
+        "GDI32.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "PROPSYS.dll",
+        1
+      ],
+      [
+        "SHLWAPI.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2014-04-24 11:06:19 UTC"
+  },
+  {
+    "archive": "Wangan Midnight Maximum Tune 5DX (2015) (Japan) [Namco ES3B] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Wangan Midnight Maximum Tune 5DX (2015) (Japan) [Namco ES3B] [TP].zip",
+    "variant": "ES3B",
+    "bytes": 13646987219,
+    "title": "Wangan Midnight Maximum Tune 5DX (2015) (Japan)",
+    "files": 49961,
+    "binary": "wmn5r.exe",
+    "binary_bytes": 30312448,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 723,
+    "dlls": [
+      [
+        "MSVCP100.dll",
+        209
+      ],
+      [
+        "MSVCR100.dll",
+        164
+      ],
+      [
+        "KERNEL32.dll",
+        156
+      ],
+      [
+        "lua5.1.dll",
+        54
+      ],
+      [
+        "WS2_32.dll",
+        34
+      ],
+      [
+        "nuSound2_win64.dll",
+        32
+      ],
+      [
+        "USER32.dll",
+        26
+      ],
+      [
+        "IPHLPAPI.DLL",
+        8
+      ],
+      [
+        "MFPlat.DLL",
+        7
+      ],
+      [
+        "hasp_windows_x64_98199.dll",
+        5
+      ],
+      [
+        "ole32.dll",
+        5
+      ],
+      [
+        "ADVAPI32.dll",
+        3
+      ],
+      [
+        "PSAPI.DLL",
+        3
+      ],
+      [
+        "dbghelp.dll",
+        3
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        2
+      ],
+      [
+        "MFReadWrite.dll",
+        2
+      ],
+      [
+        "MSWSOCK.dll",
+        2
+      ],
+      [
+        "dwmapi.dll",
+        2
+      ],
+      [
+        "GDI32.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "PROPSYS.dll",
+        1
+      ],
+      [
+        "SHLWAPI.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2015-11-06 11:09:46 UTC"
+  },
+  {
+    "archive": "Wangan Midnight Maximum Tune 5DX+ (2017) (Export) [Namco ES3B] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Wangan Midnight Maximum Tune 5DX+ (2017) (Export) [Namco ES3B] [TP].zip",
+    "variant": "ES3B",
+    "bytes": 12988794745,
+    "title": "Wangan Midnight Maximum Tune 5DX+ (2017) (Export)",
+    "files": 52900,
+    "binary": "wmn5r.exe",
+    "binary_bytes": 34272768,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 734,
+    "dlls": [
+      [
+        "MSVCP100.dll",
+        212
+      ],
+      [
+        "MSVCR100.dll",
+        166
+      ],
+      [
+        "KERNEL32.dll",
+        157
+      ],
+      [
+        "lua5.1.dll",
+        54
+      ],
+      [
+        "WS2_32.dll",
+        34
+      ],
+      [
+        "nuSound2_win64.dll",
+        32
+      ],
+      [
+        "USER32.dll",
+        26
+      ],
+      [
+        "IPHLPAPI.DLL",
+        8
+      ],
+      [
+        "ADVAPI32.dll",
+        7
+      ],
+      [
+        "MFPlat.DLL",
+        7
+      ],
+      [
+        "hasp_windows_x64_106482.dll",
+        6
+      ],
+      [
+        "ole32.dll",
+        5
+      ],
+      [
+        "PSAPI.DLL",
+        3
+      ],
+      [
+        "dbghelp.dll",
+        3
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        2
+      ],
+      [
+        "MFReadWrite.dll",
+        2
+      ],
+      [
+        "MSWSOCK.dll",
+        2
+      ],
+      [
+        "dwmapi.dll",
+        2
+      ],
+      [
+        "GDI32.dll",
+        1
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "PROPSYS.dll",
+        1
+      ],
+      [
+        "SHLWAPI.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2016-10-26 11:25:35 UTC"
+  },
+  {
+    "archive": "Wangan Midnight Maximum Tune 6 (1.03.04) (2018) (Export) [Namco ES3B] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Wangan Midnight Maximum Tune 6 (1.03.04) (2018) (Export) [Namco ES3B] [TP].zip",
+    "variant": "ES3B",
+    "bytes": 9974085303,
+    "title": "Wangan Midnight Maximum Tune 6 (1.03.04) (2018) (Export)",
+    "files": 33883,
+    "binary": "wmn6r.exe",
+    "binary_bytes": 32727552,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 762,
+    "dlls": [
+      [
+        "MSVCP100.dll",
+        217
+      ],
+      [
+        "MSVCR100.dll",
+        166
+      ],
+      [
+        "KERNEL32.dll",
+        158
+      ],
+      [
+        "lua5.1.dll",
+        54
+      ],
+      [
+        "WS2_32.dll",
+        34
+      ],
+      [
+        "nuSound2_win64.dll",
+        31
+      ],
+      [
+        "USER32.dll",
+        25
+      ],
+      [
+        "bngrw.dll",
+        11
+      ],
+      [
+        "IPHLPAPI.DLL",
+        8
+      ],
+      [
+        "ADVAPI32.dll",
+        7
+      ],
+      [
+        "MFPlat.DLL",
+        7
+      ],
+      [
+        "SETUPAPI.dll",
+        6
+      ],
+      [
+        "hasp_windows_x64_28756.dll",
+        6
+      ],
+      [
+        "ole32.dll",
+        5
+      ],
+      [
+        "GDI32.dll",
+        4
+      ],
+      [
+        "Nbam_QR_Code.dll",
+        4
+      ],
+      [
+        "PSAPI.DLL",
+        3
+      ],
+      [
+        "dbghelp.dll",
+        3
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        2
+      ],
+      [
+        "MFReadWrite.dll",
+        2
+      ],
+      [
+        "MSWSOCK.dll",
+        2
+      ],
+      [
+        "dwmapi.dll",
+        2
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "PROPSYS.dll",
+        1
+      ],
+      [
+        "SHLWAPI.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2018-09-27 10:51:13 UTC"
+  },
+  {
+    "archive": "Wangan Midnight Maximum Tune 6R (2020) (Japan) [Namco ES3B] [TP].zip",
+    "path": "Y:\\unsort\\complete\\teknoparrot-eggman\\Wangan Midnight Maximum Tune 6R (2020) (Japan) [Namco ES3B] [TP].zip",
+    "variant": "ES3B",
+    "bytes": 8935210824,
+    "title": "Wangan Midnight Maximum Tune 6R (2020) (Japan)",
+    "files": 23037,
+    "binary": "wmn6r.exe",
+    "binary_bytes": 34958848,
+    "arch": "x64",
+    "stage": "catalogued",
+    "pe": "PE32+ x86-64",
+    "imports": 769,
+    "dlls": [
+      [
+        "MSVCP100.dll",
+        217
+      ],
+      [
+        "MSVCR100.dll",
+        169
+      ],
+      [
+        "KERNEL32.dll",
+        159
+      ],
+      [
+        "lua5.1.dll",
+        54
+      ],
+      [
+        "WS2_32.dll",
+        34
+      ],
+      [
+        "nuSound2_win64.dll",
+        31
+      ],
+      [
+        "USER32.dll",
+        25
+      ],
+      [
+        "bngrw.dll",
+        11
+      ],
+      [
+        "IPHLPAPI.DLL",
+        8
+      ],
+      [
+        "ADVAPI32.dll",
+        7
+      ],
+      [
+        "MFPlat.DLL",
+        7
+      ],
+      [
+        "SETUPAPI.dll",
+        6
+      ],
+      [
+        "hasp_windows_x64_28756.dll",
+        6
+      ],
+      [
+        "ole32.dll",
+        5
+      ],
+      [
+        "GDI32.dll",
+        4
+      ],
+      [
+        "Nbam_QR_Code.dll",
+        4
+      ],
+      [
+        "PSAPI.DLL",
+        3
+      ],
+      [
+        "dbghelp.dll",
+        3
+      ],
+      [
+        "nbamUsbFinder.dll",
+        3
+      ],
+      [
+        "D3DCOMPILER_43.dll",
+        2
+      ],
+      [
+        "MFReadWrite.dll",
+        2
+      ],
+      [
+        "MSWSOCK.dll",
+        2
+      ],
+      [
+        "dwmapi.dll",
+        2
+      ],
+      [
+        "MF.dll",
+        1
+      ],
+      [
+        "PROPSYS.dll",
+        1
+      ],
+      [
+        "SHLWAPI.dll",
+        1
+      ],
+      [
+        "d3d11.dll",
+        1
+      ],
+      [
+        "dxgi.dll",
+        1
+      ]
+    ],
+    "linker": "MSVC 10.00   built 2019-12-09 08:06:04 UTC"
+  }
+]
