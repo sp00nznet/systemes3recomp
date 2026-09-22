@@ -32,6 +32,12 @@ discarded it in favour of a cabinet counter that nothing here drives.
 
 *Donkey Kong, lap 2/2, first place, on a pad. Not attract mode.*
 
+![Mario mid-boost, driving on the triggers with no assist](docs/manual-pedals.png)
+
+*And with no assist — no "Auto-Accel is on!" badge in the corner, so the
+accelerator and brake are the pad's triggers. Peak speed on them measures
+within 3% of the game's own assist.*
+
 **What is not finished.** The pedals: an XInput pad reports both triggers on
 one DirectInput axis, so the game cannot tell accelerator from brake and
 races run on the cabinet's own auto-accel. And the in-race camera sometimes
