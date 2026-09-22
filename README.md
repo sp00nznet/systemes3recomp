@@ -24,15 +24,29 @@ in full 3D** — the course, the karts, the characters, animating, at 1360x768 �
 with **all 495 imports** answered by real DLLs, the cabinet's own camera and
 JVS libraries included.
 
-**Not reliably yet:** about one run in five gets that far. The rest drop out
-partway through the self-check to the operator menu, or quit cleanly. The
-screenshot below is a real frame from a real run, not a representative one.
+**And it is played, not watched.** A race on a gamepad: pick a character,
+pick a track, steer, use items, win. The steering took longer than the
+renderer did — the wheel value was correct for days while the game quietly
+discarded it in favour of a cabinet counter that nothing here drives.
 
-![Mario Kart Arcade GP DX attract mode, recompiled](docs/attract-mode.png)
+![Mario Kart Arcade GP DX, recompiled: first place on the last lap](docs/mariokartdx-race.png)
 
-*Read out of the recompiled executable's own swap chain with `ES3_SHOT=`, which
-captures the back buffer before each present. The card prompt is part of the
-attract loop, not an error.*
+*Donkey Kong, lap 2/2, first place, on a pad. Not attract mode.*
+
+**What is not finished.** The pedals: an XInput pad reports both triggers on
+one DirectInput axis, so the game cannot tell accelerator from brake and
+races run on the cabinet's own auto-accel. The in-race camera hangs at the
+moment it presents the player, and the race carries on behind it. Both are
+measured and neither is guessed at — see the game project's commit log.
+
+**And it is not one title.** *Star Wars: Battle Pods* renders its attract mode
+through the same toolkit — a second ES3 game, a different engine, the same
+lifted CPU and the same answers for the cabinet's hardware.
+
+![Star Wars: Battle Pods, recompiled: the Death Star surface](docs/battlepods-deathstar.png)
+
+*Battle Pods, attract mode. TIE fighters, turbolaser fire and a Death Star
+surface, out of the recompiled executable's own swap chain.*
 
 Getting the last of the way there was three missing instructions hiding behind
 one misread number — see [Where it stops](#where-it-stops-now) and
