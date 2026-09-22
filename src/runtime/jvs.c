@@ -555,7 +555,7 @@ static void seq_tick(void)
  *   arrow keys        d-pad                UP / DOWN / LEFT / RIGHT
  *   Left / Right      left stick X         steering, analog channel 0
  *   Up / Down         right / left trigger accelerator and brake, channels 1-2
- *   T                 -                    TEST   (the operator menu)
+ *   T                 RB                   TEST   (the operator menu)
  *   S                 Back                 SERVICE
  *   5                 -                    insert a coin
  *
@@ -696,20 +696,23 @@ static void input_poll(void)
         memset(&st, 0, sizeof st);
         if (xi(0, &st) == 0) {
             WORD b = st.Gamepad.wButtons;
-            /* Back+Start together is TEST, which opens the operator menu.
+            /* RB is TEST, which opens the operator menu.
              *
              * It has only ever been on the T key, and the keyboard is read
              * behind ours_in_front() while the pad is not - so on a machine
              * where that check fails, every keyboard binding is unreachable
              * and the operator menu with them. It is the one menu that turns
              * cabinet features off, so it cannot be the only thing with no
-             * pad binding. Held together, so neither is pressed by accident. */
-            if ((b & 0x0030) == 0x0030) {
-                sys |= 0x80u;                   /* TEST */
-            } else {
-                if (b & 0x0010) p1 |= JVS_START;    /* Start */
-                if (b & 0x0020) p1 |= JVS_SERV;     /* Back  */
-            }
+             * pad binding.
+             *
+             * A single button, and RB because it is the only one spare.
+             * Back+Start was the obvious combo and is the wrong answer on
+             * this platform: Windows takes it for the Xbox overlay and the
+             * game never sees it. The same goes for any chord involving the
+             * Guide button. */
+            if (b & 0x0200) sys |= 0x80u;       /* RB: TEST */
+            if (b & 0x0010) p1 |= JVS_START;    /* Start */
+            if (b & 0x0020) p1 |= JVS_SERV;     /* Back  */
             if (b & 0x1000) p1 |= JVS_ITEM;     /* A     */
             if (b & 0x2000) p1 |= JVS_PUSH2;    /* B     */
             if (b & 0x0040) coin = 1;           /* left stick click  */
