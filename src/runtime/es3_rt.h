@@ -102,6 +102,12 @@ void     es3_card_post_read(uint32_t buf, uint32_t n, uint32_t ovl, uint32_t rou
 void     es3_card_complete_write(uint32_t ovl, uint32_t bytes, uint32_t routine);
 void     es3_card_cancel(void);
 void     es3_card_tap(void);      /* a card held against the reader */
+
+/* The accelerator and brake as 0..1, from whatever the JVS poll last read.
+ * A cabinet takes these over JVS, but a title that reads its pedals from a
+ * DirectInput wheel cannot: an XInput pad reports both triggers on one axis
+ * there, so the two cannot be recovered. Handed over separately instead. */
+extern float g_pedal_gas, g_pedal_brake;
 void     es3_card_state(unsigned char uid[4], int *present, int *reads,
                         int *writes, unsigned char *image1k);
 const char *es3_card_file(void);

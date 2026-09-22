@@ -82,6 +82,9 @@ static uint32_t g_sw_sys, g_sw_p1, g_sw_p2;
  * where the mapping is written down. Kept apart from the sequencer's bits so
  * the two can be OR-ed rather than one erasing the other. */
 static uint32_t g_in_sys, g_in_p1;
+/* The pedals as 0..1, read by a game that has to be handed them. */
+float g_pedal_gas, g_pedal_brake;
+
 static uint32_t g_analog[8] = { 0x8000u, 0, 0, 0x8000u, 0x8000u, 0x8000u,
                                 0x8000u, 0x8000u };
 
@@ -648,6 +651,28 @@ static void input_poll(void)
 
     if (input_off()) return;
 
+    {
+        /* Why the keyboard does nothing, said once.
+         *
+         * Every keyboard binding is behind this check and the pad is not, so
+         * when it fails the symptom is "only the pad works" - including the
+         * operator menu, which was on T alone. Worth naming rather than
+         * leaving as a silent difference between two halves of one function. */
+        static int told;
+        if (!told && !ours_in_front()) {
+            HWND h = GetForegroundWindow();
+            DWORD pid = 0;
+            if (h) GetWindowThreadProcessId(h, &pid);
+            told = 1;
+            fprintf(stderr, "[jvs] the keyboard is idle because a window of "
+                            "another process (%lu, this one is %lu) has the "
+                            "foreground; the pad still works, and Back+Start "
+                            "is TEST.\n",
+                    (unsigned long)pid, (unsigned long)GetCurrentProcessId());
+            fflush(stderr);
+        }
+    }
+
     if (ours_in_front()) {
         #define DOWN_(k) ((GetAsyncKeyState(k) & 0x8000) != 0)
         if (DOWN_(VK_RETURN))                       p1 |= JVS_START;
@@ -671,8 +696,20 @@ static void input_poll(void)
         memset(&st, 0, sizeof st);
         if (xi(0, &st) == 0) {
             WORD b = st.Gamepad.wButtons;
-            if (b & 0x0010) p1 |= JVS_START;    /* Start */
-            if (b & 0x0020) p1 |= JVS_SERV;     /* Back  */
+            /* Back+Start together is TEST, which opens the operator menu.
+             *
+             * It has only ever been on the T key, and the keyboard is read
+             * behind ours_in_front() while the pad is not - so on a machine
+             * where that check fails, every keyboard binding is unreachable
+             * and the operator menu with them. It is the one menu that turns
+             * cabinet features off, so it cannot be the only thing with no
+             * pad binding. Held together, so neither is pressed by accident. */
+            if ((b & 0x0030) == 0x0030) {
+                sys |= 0x80u;                   /* TEST */
+            } else {
+                if (b & 0x0010) p1 |= JVS_START;    /* Start */
+                if (b & 0x0020) p1 |= JVS_SERV;     /* Back  */
+            }
             if (b & 0x1000) p1 |= JVS_ITEM;     /* A     */
             if (b & 0x2000) p1 |= JVS_PUSH2;    /* B     */
             if (b & 0x0040) coin = 1;           /* left stick click  */
@@ -700,6 +737,15 @@ static void input_poll(void)
     g_in_sys = sys;
     /* 0x8000 is centre, and the channels the game reads as 16-bit. */
     g_analog[0] = (uint32_t)(0x8000 + steer / 2);
+    /* The same two pedals as plain 0..1, for anything that cannot use these
+     * channels. MKDX reads its pedals out of the DirectInput record rather
+     * than from JVS, and an XInput pad puts BOTH triggers on one DirectInput
+     * axis - so the game is physically unable to tell them apart there, and
+     * has to be handed them. Measured: raw Y is always 0 and raw Z is 32767
+     * at rest, moving to 65408 for one trigger. */
+    g_pedal_gas   = (float)gas   / 255.0f;
+    g_pedal_brake = (float)brake / 255.0f;
+
     g_analog[1] = (uint32_t)(gas   * 257 / 2 + (gas   ? 0x8000 : 0));
     g_analog[2] = (uint32_t)(brake * 257 / 2 + (brake ? 0x8000 : 0));
     if (g_analog[1] > 0xFFFFu) g_analog[1] = 0xFFFFu;
